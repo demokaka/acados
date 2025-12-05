@@ -348,7 +348,7 @@ if(MSVC)
         set(LINK_FLAG_OOQP ooqp.lib)
     endif()
 else()
-    # GCC/Clang, MinGW, Linux, etc. – giữ nguyên như acados gốc
+    # GCC/Clang, MinGW, Linux, etc. – keep as original acados
     # Write libraries to be linked into a json file
     if(${ACADOS_WITH_OPENMP})
         set(LINK_FLAG_OPENMP ${OpenMP_C_FLAGS})
