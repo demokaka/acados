@@ -323,7 +323,6 @@ message(STATUS " ")
 if(MSVC)
     # Windows + MSVC
     if(${ACADOS_WITH_OPENMP})
-        # Tùy bạn: MSVC dùng /openmp, nhưng ở đây JSON có thể chỉ cần để trống
         set(LINK_FLAG_OPENMP "")
     endif()
 
