@@ -243,7 +243,11 @@ delete(filename)
 
 % test QP dump
 filename = 'qp.json';
-ocp_solver.dump_last_qp_to_json('qp.json')
+ocp_solver.dump_last_qp_to_json(filename, false, 'Matlab')
+delete(filename)
+
+filename = 'qp_c_backend.json';
+ocp_solver.dump_last_qp_to_json(filename, false)
 delete(filename)
 
 % test qp_diagnostics

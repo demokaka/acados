@@ -63,22 +63,18 @@ def main_parametric(qp_solver_ric_alg: int, eigen_analysis=True, use_cython=Fals
 
     # create nominal solver
     if use_cython:
-        AcadosOcpSolver.generate(ocp, json_file="parameter_augmented_acados_ocp.json")
-        AcadosOcpSolver.build(ocp.code_export_directory, with_cython=True)
-        ocp_solver = AcadosOcpSolver.create_cython_solver("parameter_augmented_acados_ocp.json")
+        ocp_solver = AcadosOcpSolver.create_cython_solver(ocp)
     else:
-        ocp_solver = AcadosOcpSolver(ocp, build=build, generate=generate, json_file="parameter_augmented_acados_ocp.json", verbose=verbose)
+        ocp_solver = AcadosOcpSolver(ocp, build=build, generate=generate, verbose=verbose)
 
     # create sensitivity solver
     ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, hessian_approx='EXACT', qp_solver_ric_alg=qp_solver_ric_alg, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint)
     ocp.model.name = 'sensitivity_solver'
     ocp.code_export_directory = f'c_generated_code_{ocp.model.name}'
     if use_cython:
-        AcadosOcpSolver.generate(ocp, json_file=f"{ocp.model.name}.json")
-        AcadosOcpSolver.build(ocp.code_export_directory, with_cython=True)
-        sensitivity_solver = AcadosOcpSolver.create_cython_solver(f"{ocp.model.name}.json")
+        sensitivity_solver = AcadosOcpSolver.create_cython_solver(ocp)
     else:
-        sensitivity_solver = AcadosOcpSolver(ocp, build=build, generate=generate, json_file=f"{ocp.model.name}.json", verbose=verbose)
+        sensitivity_solver = AcadosOcpSolver(ocp, build=build, generate=generate, verbose=verbose)
 
     if eigen_analysis:
         min_eig_full = np.zeros(np_test)
@@ -105,9 +101,9 @@ def main_parametric(qp_solver_ric_alg: int, eigen_analysis=True, use_cython=Fals
         sensitivity_solver.set_p_global_and_precompute_dependencies(p_val)
         u_opt[i] = ocp_solver.solve_for_x0(x0)[0]
 
-        iterate = ocp_solver.store_iterate_to_flat_obj()
+        iterate = ocp_solver.get_flat_iterate()
 
-        sensitivity_solver.load_iterate_from_flat_obj(iterate)
+        sensitivity_solver.set_iterate(iterate)
         sensitivity_solver.setup_qp_matrices_and_factorize()
 
         for j in range(1, N_horizon):
@@ -127,11 +123,11 @@ def main_parametric(qp_solver_ric_alg: int, eigen_analysis=True, use_cython=Fals
             min_eig_P[i] = projected_hessian_diagnostics['min_eigv_P_global']
             min_abs_eig_P[i] = projected_hessian_diagnostics['min_abs_eigv_P_global']
 
-        if ocp_solver.get_status() not in [0]:
-            print(f"OCP solver returned status {ocp_solver.get_status()}.")
+        if ocp_solver.status not in [0]:
+            print(f"OCP solver returned status {ocp_solver.status}.")
             breakpoint()
-        if sensitivity_solver.get_status() not in [0, 2]:
-            print(f"sensitivity solver returned status {sensitivity_solver.get_status()}.")
+        if sensitivity_solver.status not in [0, 2]:
+            print(f"sensitivity solver returned status {sensitivity_solver.status}.")
             # breakpoint()
         # Calculate the policy gradient
         out_dict = sensitivity_solver.eval_solution_sensitivity(0, "p_global", return_sens_x=False)

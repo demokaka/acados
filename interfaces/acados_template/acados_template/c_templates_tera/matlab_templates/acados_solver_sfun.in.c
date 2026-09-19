@@ -41,7 +41,6 @@
 // example specific
 #include "acados_solver_{{ name }}.h"
 
-
 {%- if not solver_options.custom_update_filename %}
     {%- set custom_update_filename = "" %}
 {% else %}
@@ -148,6 +147,11 @@
   {%- set ns_max = ns_values | sort | last %}
 {%- endif %}
 
+typedef struct {
+    {{ name }}_solver_capsule *capsule;
+    double* buffer;
+} AcadosOcpData;
+
 
 static void mdlInitializeSizes (SimStruct *S)
 {
@@ -178,6 +182,10 @@ static void mdlInitializeSizes (SimStruct *S)
     {%- set n_inputs = n_inputs + 1 -%}
   {%- endif -%}
   {%- if dims_0.ny_0 > 0 and simulink_opts.inputs.y_ref_0 -%}  {#- y_ref_0 -#}
+    {%- set n_inputs = n_inputs + 1 -%}
+  {%- endif -%}
+  // Additional input for payload (only when enabled)
+  {%- if custom_update_filename != "" and simulink_opts.inputs.zoRO_payload == 1 -%}
     {%- set n_inputs = n_inputs + 1 -%}
   {%- endif -%}
 
@@ -258,7 +266,9 @@ static void mdlInitializeSizes (SimStruct *S)
     {%- set n_inputs = n_inputs + 1 -%}
   {%- endif -%}
 
-  {%- if simulink_opts.inputs.reset_solver -%}  {#- reset_solver #}
+  {%- if simulink_opts.inputs.reset_solver and simulink_opts.inputs.reset_flags %}  {#- reset_solver with reset flags #}
+    {%- set n_inputs = n_inputs + 2 -%}
+  {%- elif simulink_opts.inputs.reset_solver %}  {#- reset_solver #}
     {%- set n_inputs = n_inputs + 1 -%}
   {%- endif -%}
 
@@ -371,6 +381,14 @@ static void mdlInitializeSizes (SimStruct *S)
   {% if simulink_opts.outputs.parameter_traj == 1 %}
     {%- set n_outputs = n_outputs + 1 %}
   {%- endif %}
+
+  {% if simulink_opts.outputs.zoRO_Pk_matrices == 1%}
+    {%- set n_outputs = n_outputs + 1 %}
+  {% endif %}
+
+  {% if simulink_opts.outputs.zoRO_K_matrices == 1%}
+    {%- set n_outputs = n_outputs + 1 %}
+  {% endif %}
 
     // specify the number of input ports
     if ( !ssSetNumInputPorts(S, {{ n_inputs }}) )
@@ -550,7 +568,13 @@ static void mdlInitializeSizes (SimStruct *S)
     ssSetInputPortVectorDimension(S, {{ i_input }}, {{ ns_total }});
   {%- endif %}
 
-  {%- if simulink_opts.inputs.reset_solver -%}  {#- reset_solver #}
+  {%- if simulink_opts.inputs.reset_solver and simulink_opts.inputs.reset_flags %}  {#- reset_solver with reset flags #}
+    {%- set i_input = i_input + 1 %}
+    // reset_solver with additional reset flags
+    ssSetInputPortVectorDimension(S, {{ i_input }}, 1);
+    {%- set i_input = i_input + 1 %}
+    ssSetInputPortVectorDimension(S, {{ i_input }}, 4); // four additional flags: reset_qp_solver, reset_numerical_values, reset_solver_options, reset_x_to_x0_bar
+  {%- elif simulink_opts.inputs.reset_solver %}  {#- reset_solver #}
     {%- set i_input = i_input + 1 %}
     // reset_solver
     ssSetInputPortVectorDimension(S, {{ i_input }}, 1);
@@ -616,6 +640,13 @@ static void mdlInitializeSizes (SimStruct *S)
   {%- endfor -%}
 {%- endif -%}
 
+{%- if custom_update_filename != "" and simulink_opts.inputs.zoRO_payload == 1 -%}
+  {%- set i_input = i_input + 1 -%}
+  // Extra inport for custom_update payload
+  ssSetInputPortVectorDimension(S, {{ i_input }}, {{ zoro_description.data_size }});
+  ssSetInputPortRequiredContiguous(S, {{ i_input }}, 1);
+  {%- set zoro_port_index = i_input -%}
+{%- endif -%}
 
     /* specify dimension information for the OUTPUT ports */
     {%- set i_output = -1 %}{# note here i_output is 0-based #}
@@ -703,11 +734,21 @@ static void mdlInitializeSizes (SimStruct *S)
     ssSetOutputPortVectorDimension(S, {{ i_output }}, {{ np_total }});
   {%- endif -%}
 
+  {%- if simulink_opts.outputs.zoRO_Pk_matrices == 1 %}
+    {%- set i_output = i_output + 1 %}
+    ssSetOutputPortVectorDimension(S, {{ i_output }}, {{ dims_0.nx * (solver_options.N_horizon+1) * dims_0.nx }} );
+  {%- endif %}
+
+  {%- if simulink_opts.outputs.zoRO_K_matrices == 1 %}
+    {%- set i_output = i_output + 1 %}
+    ssSetOutputPortVectorDimension(S, {{ i_output }}, {{ dims_0.nu * solver_options.N_horizon * dims_0.nx }} );
+  {%- endif %}
     // specify the direct feedthrough status
     // should be set to 1 for all inputs used in mdlOutputs
     {%- for i in range(end=n_inputs) %}
     ssSetInputPortDirectFeedThrough(S, {{ i }}, 1);
     {%- endfor %}
+
 
     // one sample time
     ssSetNumSampleTimes(S, 1);
@@ -743,26 +784,13 @@ static void mdlInitializeSampleTimes(SimStruct *S)
 
 static void mdlStart(SimStruct *S)
 {
-    {{ name }}_solver_capsule *capsule = {{ name }}_acados_create_capsule();
-    {{ name }}_acados_create(capsule);
+    AcadosOcpData *ocp_data = malloc(sizeof(*ocp_data));
 
-    ssSetUserData(S, (void*)capsule);
-}
+    // capsule
+    ocp_data->capsule = {{ name }}_acados_create_capsule();
+    {{ name }}_acados_create(ocp_data->capsule);
 
-
-static void mdlOutputs(SimStruct *S, int_T tid)
-{
-    {{ name }}_solver_capsule *capsule = ssGetUserData(S);
-    ocp_nlp_config *nlp_config = {{ name }}_acados_get_nlp_config(capsule);
-    ocp_nlp_dims *nlp_dims = {{ name }}_acados_get_nlp_dims(capsule);
-    ocp_nlp_in *nlp_in = {{ name }}_acados_get_nlp_in(capsule);
-    ocp_nlp_out *nlp_out = {{ name }}_acados_get_nlp_out(capsule);
-    ocp_nlp_solver *nlp_solver = {{ name }}_acados_get_nlp_solver(capsule);
-
-    InputRealPtrsType in_sign;
-
-    int N = {{ solver_options.N_horizon }};
-
+    // buffer
     {%- set buffer_sizes = [nx_total, nu_total, dims_0.nbx_0, np_total, dims_0.nbx, dims_e.nbx_e, dims_0.nbu, dims_0.ng, dims_0.nh, dims_0.nh_0, dims_e.ng_e, dims_e.nh_e, ns_total] -%}
 
   {%- if dims_0.ny_0 > 0 and simulink_opts.inputs.y_ref_0 %}  {# y_ref_0 #}
@@ -794,7 +822,29 @@ static void mdlOutputs(SimStruct *S, int_T tid)
 
     // local buffer
     {%- set buffer_size = buffer_sizes | sort | last %}
-    double buffer[{{ buffer_size }}];
+
+    ocp_data->buffer = malloc({{ buffer_size}} * sizeof(double));
+
+    ssSetUserData(S, (void*)ocp_data);
+}
+
+
+static void mdlOutputs(SimStruct *S, int_T tid)
+{
+    AcadosOcpData *ocp_data = ssGetUserData(S);
+    {{ name }}_solver_capsule *capsule = ocp_data->capsule;
+    double* buffer = ocp_data->buffer;
+
+    ocp_nlp_config *nlp_config = {{ name }}_acados_get_nlp_config(capsule);
+    ocp_nlp_dims *nlp_dims = {{ name }}_acados_get_nlp_dims(capsule);
+    ocp_nlp_in *nlp_in = {{ name }}_acados_get_nlp_in(capsule);
+    ocp_nlp_out *nlp_out = {{ name }}_acados_get_nlp_out(capsule);
+    ocp_nlp_solver *nlp_solver = {{ name }}_acados_get_nlp_solver(capsule);
+
+    InputRealPtrsType in_sign;
+
+    int N = {{ solver_options.N_horizon }};
+
     double tmp_double;
     int tmp_offset, tmp_int;
     {#- NOTE: buffer is necessary as ssGetInputPortRealSignalPtrs does not return double pointer #}
@@ -1148,14 +1198,26 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     }
   {%- endif %}
 
-  {%- if simulink_opts.inputs.reset_solver %}  {#- reset_solver #}
+  {%- if simulink_opts.inputs.reset_solver and simulink_opts.inputs.reset_flags %}  {#- reset_solver with additional reset flags#}
+    // reset_solver with additional reset flags
+    {%- set i_input = i_input + 1 %}
+    in_sign = ssGetInputPortRealSignalPtrs(S, {{ i_input }});
+    double reset = (double)(*in_sign[0]);
+
+    {%- set i_input = i_input + 1 %}
+    in_sign = ssGetInputPortRealSignalPtrs(S, {{ i_input }});
+    if (reset)
+    {
+        {{ name }}_acados_reset(capsule, (int) *in_sign[0], (int) *in_sign[1], (int) *in_sign[2], (int) *in_sign[3]);
+    }
+  {%- elif simulink_opts.inputs.reset_solver %}  {#- reset_solver with default flags #}
     // reset_solver
     {%- set i_input = i_input + 1 %}
     in_sign = ssGetInputPortRealSignalPtrs(S, {{ i_input }});
     double reset = (double)(*in_sign[0]);
     if (reset)
     {
-        {{ name }}_acados_reset(capsule, 1);
+        {{ name }}_acados_reset(capsule, 1, 0, 0, 0);
     }
   {%- endif %}
 
@@ -1309,27 +1371,53 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     tmp_double = buffer[0];
     {%- endif %}
   {%- elif solver_options.nlp_solver_type == "SQP_RTI" %}{# if custom_update_filename != "" #}
-    // preparation
-    int rti_phase = 1;
-    ocp_nlp_solver_opts_set(nlp_config, capsule->nlp_opts, "rti_phase", &rti_phase);
-    int acados_status = {{ name }}_acados_solve(capsule);
 
-    // preparation time
-    ocp_nlp_get(nlp_solver, "time_tot", (void *) buffer);
-    tmp_double = buffer[0];
-
-    // call custom update function
+    tmp_double = 0.0;
+    int rti_phase;
+    int acados_status;
     int data_len = 0;
-    double* c_data; // TODO: only works with empty..
-    acados_status = {{ name }}_acados_custom_update(capsule, c_data, data_len);
+    double* c_data = NULL;
 
-    // feedback
-    rti_phase = 2;
-    ocp_nlp_solver_opts_set(nlp_config, capsule->nlp_opts, "rti_phase", &rti_phase);
-    acados_status = {{ name }}_acados_solve(capsule);
-    // feedback time
-    ocp_nlp_get(nlp_solver, "time_tot", (void *) buffer);
-    tmp_double += buffer[0];
+    {% if simulink_opts.inputs.zoRO_payload == 1 %}
+    // Only compiled if the extra port was created at build time
+    if (ssGetInputPortConnected(S, {{ zoro_port_index }}))
+    {
+        data_len = ssGetInputPortWidth(S, {{ zoro_port_index }});
+        if (data_len > 0)
+        {
+            // Simulink guarantees this pointer is contiguous
+            c_data = (double *) ssGetInputPortRealSignal(S, {{ zoro_port_index }});
+        }
+    }
+    {% endif %}
+
+    for (int zoro_i = 0; zoro_i < {{ simulink_opts.zoro_iterations }}; zoro_i++)
+    {
+      // preparation
+      rti_phase = 1;
+      ocp_nlp_solver_opts_set(nlp_config, capsule->nlp_opts, "rti_phase", &rti_phase);
+      acados_status = {{ name }}_acados_solve(capsule);
+
+      // preparation time
+      ocp_nlp_get(nlp_solver, "time_tot", (void *) buffer);
+      tmp_double += buffer[0];
+
+      // After RTI prep (rti_phase=1): ERK produced per-stage A,B and (if enabled) S_p.
+      // custom_update will fetch S_p via ocp_nlp_get_at_stage and add S_p Sigma_p S_p^T.
+      acados_status = {{ name }}_acados_custom_update(capsule, c_data, data_len);
+      if (acados_status) {
+        ssSetErrorStatus(S, "acados custom_update failed (invalid zoRO payload size)");
+        return;
+      }
+
+      // feedback
+      rti_phase = 2;
+      ocp_nlp_solver_opts_set(nlp_config, capsule->nlp_opts, "rti_phase", &rti_phase);
+      acados_status = {{ name }}_acados_solve(capsule);
+      // feedback time
+      ocp_nlp_get(nlp_solver, "time_tot", (void *) buffer);
+      tmp_double += buffer[0];
+  }
   {%- else -%}
     Simulink block with custom solver template only works with SQP_RTI!
   {%- endif %}
@@ -1449,14 +1537,39 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     ocp_nlp_get_all(nlp_solver, nlp_in, nlp_out, "p", (void *) out_ptr);
   {%- endif %}
 
+  {% if simulink_opts.outputs.zoRO_Pk_matrices == 1%}
+    {%- set i_output = i_output + 1 %}
+    out_ptr = ssGetOutputPortRealSignal(S, {{ i_output }});
+    /* Flatten all P_k (k=0..N) from custom zoRO memory into this port. */
+    if ({{ name }}_acados_get_zoRO_Pk_matrices(capsule, out_ptr, {{ dims_0.nx * (solver_options.N_horizon+1) * dims_0.nx }}) != 0)
+    {
+        ssSetErrorStatus(S, "acados: failed to export zoRO P matrices.");
+        return;
+    }
+  {% endif %}
+
+  {% if simulink_opts.outputs.zoRO_K_matrices == 1%}
+    {%- set i_output = i_output + 1 %}
+    out_ptr = ssGetOutputPortRealSignal(S, {{ i_output }});
+    if ({{ name }}_acados_get_zoRO_K_matrices(capsule, out_ptr, {{ dims_0.nu * solver_options.N_horizon * dims_0.nx }}) != 0)
+    {
+        ssSetErrorStatus(S, "acados: failed to export zoRO K matrices.");
+        return;
+    }
+  {% endif %}
+
 }
 
 static void mdlTerminate(SimStruct *S)
 {
-    {{ name }}_solver_capsule *capsule = ssGetUserData(S);
+    AcadosOcpData *ocp_data = ssGetUserData(S);
+    {{ name }}_solver_capsule *capsule = ocp_data->capsule;
+    double* buffer = ocp_data->buffer;
 
     {{ name }}_acados_free(capsule);
     {{ name }}_acados_free_capsule(capsule);
+    free(buffer);
+    free(ocp_data);
 }
 
 

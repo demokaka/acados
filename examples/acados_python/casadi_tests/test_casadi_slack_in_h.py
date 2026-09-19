@@ -141,19 +141,20 @@ def main():
     status = ocp_solver.solve()
     if status != 0:
         raise Exception(f'acados OCP solver returned status {status}')
-    result = ocp_solver.store_iterate_to_obj()
+    result = ocp_solver.get_iterate()
     print('acados_cost:', ocp_solver.get_cost())
 
     casadi_ocp_solver = AcadosCasadiOcpSolver(ocp)
-    casadi_ocp_solver.load_iterate_from_obj(result)
+    casadi_ocp_solver.set_iterate(result)
     casadi_ocp_solver.solve()
-    result_casadi = casadi_ocp_solver.store_iterate_to_obj()
+    result_casadi = casadi_ocp_solver.get_iterate()
     print('casadi_cost:', casadi_ocp_solver.get_cost())
 
-    result.flatten().allclose(other=result_casadi.flatten())
+    if not result.flatten().allclose(other=result_casadi.flatten()):
+        raise Exception("Casadi solver result does not match acados solver result.")
 
     casadi_sqp_ocp_solver = AcadosCasadiOcpSolver(ocp, solver="sqpmethod", verbose=False)
-    casadi_sqp_ocp_solver.load_iterate_from_obj(result)
+    casadi_sqp_ocp_solver.set_iterate(result)
     casadi_sqp_ocp_solver.solve()
     iteration = casadi_sqp_ocp_solver.get_stats('nlp_iter')
     if iteration > 1:

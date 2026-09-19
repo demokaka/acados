@@ -33,7 +33,6 @@ classdef GenerateContext < handle
         p_global
         problem_name
         opts
-        casadi_codegen_opts
         list_funname_dir_pairs  % list of (function_name, output_dir) pairs, files that are generated
         generic_funname_dir_pairs % list of (function_name, output_dir) pairs, files that are not generated
         function_input_output_pairs
@@ -60,16 +59,6 @@ classdef GenerateContext < handle
             obj.global_data_expr = [];
 
             obj.opts = opts;
-            obj.casadi_codegen_opts = struct();
-            obj.casadi_codegen_opts.mex = false;
-            obj.casadi_codegen_opts.casadi_int = 'int';
-            obj.casadi_codegen_opts.casadi_real = 'double';
-            try
-                CodeGenerator('foo', struct('force_canonical', true));
-                obj.casadi_codegen_opts.force_canonical = false;
-            catch
-                % Option does not exist
-            end
 
             obj.list_funname_dir_pairs = {};
             obj.function_input_output_pairs = {};
@@ -189,10 +178,10 @@ classdef GenerateContext < handle
             end
 
             % Concatenate global data symbols and expressions
-            global_data_sym_list = cellfun(@(pair) pair{1}, precompute_pairs, 'UniformOutput', false);
+            global_data_sym_list = cellfun(@(pair) vec(pair{1}), precompute_pairs, 'UniformOutput', false);
             self.global_data_sym = vertcat(global_data_sym_list{:});
 
-            global_data_expr_list = cellfun(@(pair) pair{2}, precompute_pairs, 'UniformOutput', false);
+            global_data_expr_list = cellfun(@(pair) vec(pair{2}), precompute_pairs, 'UniformOutput', false);
             self.global_data_expr = cse(vertcat(global_data_expr_list{:}));
 
             % make sure global_data is dense
@@ -212,11 +201,10 @@ classdef GenerateContext < handle
                 end
 
                 % Define output directory and function name
-                output_dir = fullfile(pwd, self.opts.code_export_directory);
                 fun_name = sprintf('%s_p_global_precompute_fun', self.problem_name);
 
                 % Add function definition
-                self.add_function_definition(fun_name, {self.p_global}, {self.global_data_expr}, output_dir, 'precompute');
+                self.add_function_definition(fun_name, {self.p_global}, {self.global_data_expr}, self.opts.code_export_directory, 'precompute');
             else
                 disp("WARNING: No CasADi function depends on p_global.")
             end
@@ -265,7 +253,7 @@ classdef GenerateContext < handle
 
                 % generate function
                 try
-                    fun.generate(name, obj.casadi_codegen_opts);
+                    fun.generate(name, obj.opts.casadi_code_gen_options);
                 catch e
                     fprintf('Error while generating function %s in directory %s\n', name, output_dir);
                     rethrow(e);

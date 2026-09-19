@@ -81,7 +81,7 @@ def solve_infeasible_linearization(setting):
 
     # discretization
     Tf = 1
-    N = 1
+    N = 0
     ocp.solver_options.N_horizon = N
     ocp.solver_options.tf = Tf
 
@@ -90,14 +90,14 @@ def solve_infeasible_linearization(setting):
     ocp.model.cost_expr_ext_cost_e = 100*(x[1] - x[0]**2)**2 + (1 - x[0])**2
 
     # constraints
-    ocp.model.con_h_expr_0 = vertcat(x[0]*x[1], x[0] + x[1]**2)
-    ocp.constraints.lh_0 = np.array([1.0, 0.0])
-    ocp.constraints.uh_0 = np.array([ACADOS_INFTY, ACADOS_INFTY])
+    ocp.model.con_h_expr_e = vertcat(x[0]*x[1], x[0] + x[1]**2)
+    ocp.constraints.lh_e = np.array([1.0, 0.0])
+    ocp.constraints.uh_e = np.array([ACADOS_INFTY, ACADOS_INFTY])
 
     # add bounds on x
-    ocp.constraints.idxbx_0 = np.array(range(1))
-    ocp.constraints.ubx_0 = np.array([0.5])
-    ocp.constraints.lbx_0 = np.array([-ACADOS_INFTY])
+    ocp.constraints.idxbx_e = np.array(range(1))
+    ocp.constraints.ubx_e = np.array([0.5])
+    ocp.constraints.lbx_e = np.array([-ACADOS_INFTY])
 
     # set options
     ocp.solver_options.tol = 1e-6
@@ -119,7 +119,7 @@ def solve_infeasible_linearization(setting):
     ocp.solver_options.use_constraint_hessian_in_feas_qp = False
 
     ocp.code_export_directory = f'c_generated_code_{model.name}'
-    ocp_solver = AcadosOcpSolver(ocp, json_file=f'{model.name}.json')
+    ocp_solver = AcadosOcpSolver(ocp)
 
     # initialize solver
     xinit = np.array([-2, 1])
@@ -140,8 +140,8 @@ def solve_infeasible_linearization(setting):
         assert status == 4, "As expected the standard SQP method should not be able to solve hs015!"
     if ocp.solver_options.nlp_solver_type == 'SQP_WITH_FEASIBLE_QP':
         assert status == 0, "SQP_WITH_FEASIBLE_QP method should converge!"
-        assert np.allclose(solution, exact_solution), f"Found optimal solution should be (0.5,2), got {solution}!"
-        assert np.allclose(cost, optimal_objective), f"Found cost should be 306.5, got {cost}!"
+        np.testing.assert_allclose(solution, exact_solution), f"Found optimal solution should be (0.5,2), got {solution}!"
+        np.testing.assert_allclose(cost, optimal_objective), f"Found cost should be 306.5, got {cost}!"
 
 if __name__ == '__main__':
     main()

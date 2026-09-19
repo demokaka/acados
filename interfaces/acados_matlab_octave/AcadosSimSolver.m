@@ -33,6 +33,7 @@ classdef AcadosSimSolver < handle
 
     properties (Access = public)
         sim % MATLAB class AcadosSim describing the initial value problem
+        solver_creation_opts
     end
 
     properties (Access = private)
@@ -46,22 +47,33 @@ classdef AcadosSimSolver < handle
             %% optional arguments:
             % varargin{1}: solver_creation_opts: this is a struct in which some of the fields can be defined to overwrite the default values.
             % The fields are:
-            % - json_file: path to the json file containing the ocp description
             % - build: boolean, if true, the problem specific shared library is compiled
             % - generate: boolean, if true, the C code is generated
+            % - check_reuse_possible: boolean, default true.
+            %        if true and generate is false:
+            %        check if code reuse is possible by comparing SIM formulations,
+            %        options and acados version. If not identical, code generation and build are forced.
             % - compile_mex_wrapper: boolean, if true, the mex wrapper is compiled
             % - compile_interface: can be [], true or false. If [], the interface is compiled if it does not exist.
             % - output_dir: path to the directory where the MEX interface is compiled
+            % - verbose: boolean, if true, print verbose output during compilation
+            % - force_cmake: force use of CMake instead of the default Make build system on Linux
+            if isempty(sim)
+                error("initialization from json is no longer supported. Use AcadosSim.from_json() to first create a sim object.");
+            end
             obj.sim = sim;
 
             % optional arguments
             % solver creation options
-            default_solver_creation_opts = struct('json_file', '', ...
+            default_solver_creation_opts = struct(...
                     'build', true, ...
                     'generate', true, ...
+                    'check_reuse_possible', true, ...
                     'compile_mex_wrapper', true, ...
                     'compile_interface', [], ...
-                    'output_dir', fullfile(pwd, 'build'));
+                    'output_dir', fullfile(pwd, 'build'), ...
+                    'verbose', false, ...
+                    'force_cmake', false);
             if length(varargin) > 0
                 solver_creation_opts = varargin{1};
                 % set non-specified opts to default
@@ -74,58 +86,59 @@ classdef AcadosSimSolver < handle
             else
                 solver_creation_opts = default_solver_creation_opts;
             end
+            obj.solver_creation_opts = solver_creation_opts;
 
-            if isempty(sim) && isempty(solver_creation_opts.json_file)
-                error('AcadosSimSolver: provide either a sim object or a json file');
+            if isfield(obj.solver_creation_opts, 'json_file') && ~isempty(obj.solver_creation_opts.json_file)
+                warning('Providing the json_file upon solver creation is deprecated. Use codegen_options.json_file instead.')
+                sim.code_gen_options.json_file = obj.solver_creation_opts.json_file;
             end
 
-            if isempty(sim)
-                json_file = solver_creation_opts.json_file;
-            else
-                % formulation provided
-                if ~isempty(solver_creation_opts.json_file)
-                    sim.json_file = solver_creation_opts.json_file;
-                end
-                json_file = sim.json_file;
-                if ~isempty(sim.solver_options.compile_interface) && ~isempty(solver_creation_opts.compile_interface)
-                    error('AcadosOcpSolver: provide either compile_interface in OCP object or solver_creation_opts');
-                end
-                if ~isempty(sim.solver_options.compile_interface)
-                    solver_creation_opts.compile_interface = sim.solver_options.compile_interface;
-                end
-                % make consistent
-                sim.make_consistent();
+            if ~isempty(sim.solver_options.compile_interface) && ~isempty(obj.solver_creation_opts.compile_interface)
+                error('AcadosSimSolver: provide either compile_interface in SIM object or obj.solver_creation_opts');
             end
+            if ~isempty(sim.solver_options.compile_interface)
+                obj.solver_creation_opts.compile_interface = sim.solver_options.compile_interface;
+            end
+            % make consistent
+            sim.make_consistent();
 
             % compile mex sim interface if needed
-            obj.compile_mex_sim_interface_if_needed(solver_creation_opts);
+            obj.compile_mex_sim_interface_if_needed();
 
             %% generate
-            if solver_creation_opts.generate
+            if ~obj.solver_creation_opts.generate && obj.solver_creation_opts.check_reuse_possible
+                % check if code reuse can be done
+                reuse_possible = obj.is_code_reuse_possible(1);
+                if ~reuse_possible
+                    disp('AcadosSimSolver: code reuse not possible, forcing code generation and build...');
+                    obj.solver_creation_opts.generate = true;
+                    obj.solver_creation_opts.build = true;
+                else
+                    disp('AcadosSimSolver: attempting code reuse...')
+                end
+            end
+
+            if obj.solver_creation_opts.generate
                 obj.generate();
             end
 
-            % load json: TODO!?
-            acados_folder = getenv('ACADOS_INSTALL_DIR');
-            addpath(fullfile(acados_folder, 'external', 'jsonlab'));
-            acados_sim_struct = loadjson(fileread(json_file), 'SimplifyCell', 0);
-            obj.name = acados_sim_struct.model.name;
-            code_export_directory = acados_sim_struct.code_export_directory;
-
             %% compile problem specific shared library
-            if solver_creation_opts.build
-                obj.compile_sim_shared_lib(code_export_directory);
+            if obj.solver_creation_opts.build
+                tic;
+                obj.compile_sim_shared_lib(sim.code_gen_options.code_export_directory);
+                t_elapsed = toc;
+                disp(['AcadosSimSolver: Build completed in ' num2str(1000*(t_elapsed)) ' ms.']);
             end
 
             %% create solver
             return_dir = pwd();
-            cd(code_export_directory)
+            cd(sim.code_gen_options.code_export_directory)
 
-            mex_sim_solver = str2func(sprintf('%s_mex_sim_solver', obj.name));
+            mex_sim_solver = str2func(sprintf('%s_mex_sim_solver', obj.sim.name));
             obj.t_sim = mex_sim_solver();
             addpath(pwd());
 
-            cd(return_dir)
+            cd(return_dir);
         end
 
 
@@ -173,10 +186,70 @@ classdef AcadosSimSolver < handle
             status = obj.solve();
 
             if status ~= 0
-                error('AcadosSimSolver for model %s returned status %d.', obj.name, status);
+                error('AcadosSimSolver %s returned status %d.', obj.sim.name, status);
             end
 
             x_next = obj.get('xn');
+        end
+
+        function code_reuse_possible = is_code_reuse_possible(obj, verbose)
+            code_reuse_possible = 1;
+            if ~exist(obj.sim.code_gen_options.code_export_directory, 'dir')
+                code_reuse_possible = 0;
+                if verbose
+                    disp('code reuse not possible: code export directory does not exist');
+                end
+                return;
+            end
+            if ~exist(obj.sim.code_gen_options.json_file, 'file')
+                code_reuse_possible = 0;
+                if verbose
+                    disp('code reuse not possible: json file does not exist');
+                end
+                return;
+            end
+            try
+                acados_folder = getenv('ACADOS_INSTALL_DIR');
+                addpath(fullfile(acados_folder, 'external', 'jsonlab'));
+                sim_struct_restore = loadjson(fileread(json_file), 'SimplifyCell', 0);
+            catch
+                code_reuse_possible = 0;
+                if verbose
+                    disp('code reuse not possible: error loading json file');
+                end
+                return;
+            end
+
+            try
+                old_hash = sim_struct_restore.hash;
+            catch
+                code_reuse_possible = 0;
+                if verbose
+                    disp('code reuse not possible: no hash in json file');
+                end
+                return;
+            end
+
+            % create hash for current sim
+            try
+                obj.sim.make_consistent();
+                sim_struct = orderfields(obj.sim.to_struct());
+                new_hash = hash_struct(sim_struct);
+            catch
+                code_reuse_possible = 0;
+                if verbose
+                    disp('code reuse not possible: error creating hash for current sim');
+                end
+                return;
+            end
+
+            if strcmp(old_hash, new_hash) ~= 1
+                code_reuse_possible = 0;
+                if verbose
+                    disp('code reuse not possible: hash mismatch');
+                end
+                return;
+            end
         end
 
 
@@ -191,44 +264,57 @@ classdef AcadosSimSolver < handle
     methods (Access = private)
         function generate(obj)
             % generate
-            check_dir_and_create(fullfile(pwd, obj.sim.code_export_directory));
+            check_dir_and_create(obj.sim.code_gen_options.code_export_directory);
+            tic;
             obj.sim.generate_external_functions();
+            t_elapsed = toc;
+            disp(['AcadosSimSolver: External functions generated in ' num2str(1000*(t_elapsed)) ' ms.']);
+
 
             obj.sim.dump_to_json()
+
+            tic;
             obj.sim.render_templates()
+            t_elapsed = toc;
+            disp(['AcadosSimSolver: Templated solver code generated in  ' num2str(1000*(t_elapsed)) ' ms.']);
+
         end
 
-        function compile_mex_sim_interface_if_needed(obj, solver_creation_opts)
+        function compile_mex_sim_interface_if_needed(obj)
 
-            [~,~] = mkdir(solver_creation_opts.output_dir);
-            addpath(solver_creation_opts.output_dir);
+            [~,~] = mkdir(obj.solver_creation_opts.output_dir);
+            addpath(obj.solver_creation_opts.output_dir);
 
             % check if path contains spaces
-            if ~isempty(strfind(solver_creation_opts.output_dir, ' '))
+            if ~isempty(strfind(obj.solver_creation_opts.output_dir, ' '))
                 error(strcat('compile_mex_sim_interface_if_needed: Path should not contain spaces, got: ',...
-                    solver_creation_opts.output_dir));
+                    obj.solver_creation_opts.output_dir));
             end
 
             %% compile mex without model dependency
             % check if mex interface exists already
-            if isempty(solver_creation_opts.compile_interface) % auto-detect
+            if isempty(obj.solver_creation_opts.compile_interface) % auto-detect
                 if is_octave()
                     extension = '.mex';
                 else
                     extension = ['.' mexext];
                 end
-                solver_creation_opts.compile_interface = ~exist(fullfile(solver_creation_opts.output_dir, ['/sim_create', extension]), 'file');
+                obj.solver_creation_opts.compile_interface = ~exist(fullfile(obj.solver_creation_opts.output_dir, ['/sim_create', extension]), 'file');
             end
 
-            if solver_creation_opts.compile_interface
-                sim_compile_interface(solver_creation_opts.output_dir);
+            if obj.solver_creation_opts.compile_interface
+                sim_compile_interface(obj.solver_creation_opts.output_dir);
             end
         end
 
         function compile_sim_shared_lib(obj, export_dir)
             return_dir = pwd;
             cd(export_dir);
-            if isunix
+
+            force_cmake = obj.solver_creation_opts.force_cmake;
+            verbose = obj.solver_creation_opts.verbose;
+
+            if isunix && ~force_cmake
                 [ status, result ] = system('make sim_shared_lib');
                 if status
                     cd(return_dir);
@@ -236,7 +322,6 @@ classdef AcadosSimSolver < handle
                         status, result);
                 end
             else
-                % check compiler
                 use_msvc = false;
                 if ~is_octave()
                     mexOpts = mex.getCompilerConfigurations('C', 'Selected');
@@ -244,23 +329,76 @@ classdef AcadosSimSolver < handle
                         use_msvc = true;
                     end
                 end
-                % compile on Windows platform
+
+                configure_args = {'cmake'};
+
                 if use_msvc
-                    % get env vars for MSVC
-                    % msvc_env = fullfile(mexOpts.Location, 'VC\Auxiliary\Build\vcvars64.bat');
-                    % assert(isfile(msvc_env), 'Cannot find definition of MSVC env vars.');
-                    % detect MSVC version
                     msvc_ver_str = "Visual Studio " + mexOpts.Version(1:2) + " " + mexOpts.Name(22:25);
-                    [ status, result ] = system(['cmake -G "' + msvc_ver_str + '" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_ACADOS_SIM_SOLVER_LIB=ON -DBUILD_ACADOS_OCP_SOLVER_LIB=OFF -S . -B .']);
+                    configure_args = [configure_args, ...
+                        {'-G', ['"' char(msvc_ver_str) '"'], '-A x64'}];
+                elseif ~isunix
+                    configure_args = [configure_args, ...
+                        {'-G "MinGW Makefiles"'}];
+                end
+
+                configure_args = [configure_args, ...
+                    {'-DCMAKE_BUILD_TYPE=Release', ...
+                    '-DBUILD_ACADOS_SIM_SOLVER_LIB=ON', ...
+                    '-DBUILD_ACADOS_OCP_SOLVER_LIB=OFF', ...
+                    '-S .', ...
+                    '-B .'}];
+
+                configure_cmd = strjoin(configure_args, ' ');
+                build_cmd = 'cmake --build . --config Release';
+
+                if isunix && ~ismac && ~is_octave()
+
+                    [status_stdcpp, libstdcpp] = system( ...
+                        'ldconfig -p | grep "/libstdc++.so.6$" | head -n1 | sed ''s/.*=> //''' );
+
+                    [status_curl, libcurl] = system( ...
+                        'ldconfig -p | grep "/libcurl.so.4$" | head -n1 | sed ''s/.*=> //''' );
+
+                    libstdcpp = strtrim(libstdcpp);
+                    libcurl = strtrim(libcurl);
+
+                    preload_libs = {};
+
+                    if status_stdcpp == 0 && exist(libstdcpp, 'file') == 2
+                        preload_libs{end+1} = libstdcpp;
+                    end
+
+                    if status_curl == 0 && exist(libcurl, 'file') == 2
+                        preload_libs{end+1} = libcurl;
+                    end
+
+                    if ~isempty(preload_libs)
+
+                        % Inject newer shared libraries only for the CMake subprocess.
+                        % MATLAB itself may depend on older bundled versions.
+                        preload = ['LD_PRELOAD=' strjoin(preload_libs, ':') ' '];
+
+                        configure_cmd = [preload configure_cmd];
+                        build_cmd = [preload build_cmd];
+                    end
+                end
+
+                if verbose
+                    [status, result] = system(configure_cmd, '-echo');
                 else
-                    [ status, result ] = system('cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_ACADOS_SIM_SOLVER_LIB=ON -DBUILD_ACADOS_OCP_SOLVER_LIB=OFF -S . -B .');
+                    [status, result] = system(configure_cmd);
                 end
                 if status
                     cd(return_dir);
                     error('Generating buildsystem failed.\nGot status %d, result: %s',...
                         status, result);
                 end
-                [ status, result ] = system('cmake --build . --config Release');
+
+                if verbose
+                    [status, result] = system(build_cmd, '-echo');
+                else
+                    [status, result] = system(build_cmd);
+                end
                 if status
                     cd(return_dir);
                     error('Building templated code as shared library failed.\nGot status %d, result: %s',...

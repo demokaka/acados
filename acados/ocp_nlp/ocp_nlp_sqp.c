@@ -496,10 +496,18 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
     ocp_qp_out *qp_out = nlp_mem->qp_out;
 
     qp_info *qp_info_;
-    ocp_qp_out_get(qp_out, "qp_info", &qp_info_);
+    ocp_qp_out_get(qp_out, 0, "qp_info", &qp_info_);
 
     // zero timers
     ocp_nlp_timings_reset(nlp_timings);
+
+    // if print level > 2 set print level in the qp solver to 1
+    int tmp_int;
+    if (nlp_opts->print_level > 2)
+        tmp_int = 1;
+    else
+        tmp_int = 0;
+    qp_solver->opts_set(qp_solver, nlp_opts->qp_solver_opts, "print_level", &tmp_int);
 
     int qp_status = 0;
     int qp_iter = 0;
@@ -654,7 +662,7 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
             if (!nlp_opts->warm_start_first_qp)
             {
                 // (typically) no warm start at first iteration
-                int tmp_int = 0;
+                tmp_int = 0;
                 qp_solver->opts_set(qp_solver, nlp_opts->qp_solver_opts, "warm_start", &tmp_int);
             }
             else if (nlp_opts->warm_start_first_qp_from_nlp)
@@ -729,7 +737,7 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
             // restore number of threads
             omp_set_num_threads(num_threads_bkp);
 #endif
-            if (nlp_opts->print_level > 1)
+            if (nlp_opts->print_level > 3)
             {
                 printf("\n Failed to solve the following QP:\n");
                 if (nlp_opts->print_level)
@@ -919,18 +927,19 @@ void ocp_nlp_sqp_eval_lagr_grad_p(void *config_, void *dims_, void *nlp_in_, voi
 }
 
 
-void ocp_nlp_sqp_eval_solution_sens_adj_p(void *config_, void *dims_,
+void ocp_nlp_sqp_eval_solution_sens_adj_p(void *config_, void *dims_, void *in_,
                         void *opts_, void *mem_, void *work_, void *sens_nlp_out,
                         const char *field, int stage, void *grad_p)
 {
     ocp_nlp_dims *dims = dims_;
+    ocp_nlp_in *in = in_;
     ocp_nlp_config *config = config_;
     ocp_nlp_sqp_opts *opts = opts_;
     ocp_nlp_sqp_memory *mem = mem_;
     ocp_nlp_memory *nlp_mem = mem->nlp_mem;
     ocp_nlp_sqp_workspace *work = work_;
     ocp_nlp_workspace *nlp_work = work->nlp_work;
-    ocp_nlp_common_eval_solution_sens_adj_p(config, dims,
+    ocp_nlp_common_eval_solution_sens_adj_p(config, dims, in,
                         opts->nlp_opts, nlp_mem, nlp_work,
                         sens_nlp_out, field, stage, grad_p);
 }

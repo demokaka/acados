@@ -28,6 +28,7 @@
 # POSSIBILITY OF SUCH DAMAGE.;
 #
 
+import warnings, inspect
 import numpy as np
 from .utils import J_to_idx, print_J_to_idx_note, J_to_idx_slack, cast_to_1d_nparray, cast_to_2d_nparray, is_empty
 
@@ -235,8 +236,7 @@ class AcadosOcpConstraints:
 
     @property
     def idxbx_0(self):
-        """Indices of bounds on x at initial stage 0
-        -- can be set automatically via x0.
+        """Indices of bounds on x at initial stage 0 (can be set automatically via x0).
         Can be set by using :py:attr:`Jbx_0`.
         Type: :code:`np.ndarray`; default: :code:`np.array([])`"""
         return self.__idxbx_0
@@ -1249,3 +1249,29 @@ class AcadosOcpConstraints:
 
     def set(self, attr, value):
         setattr(self, attr, value)
+
+    @classmethod
+    def from_dict(cls, dict):
+        """
+        Load all properties from a given dictionary (obtained from loading a generated json).
+        Values that correspond to the empty list are ignored.
+        """
+
+        constraints = cls()
+
+        # loop over all properties
+        for attr, _ in inspect.getmembers(type(constraints), lambda v: isinstance(v, property)):
+
+            value = dict.get(attr)
+
+            if value is None:
+                warnings.warn(f"Attribute {attr} not in dictionary.")
+            else:
+                try:
+                    # check whether value is not the empty list
+                    if not (isinstance(value, list) and not value):
+                        setattr(constraints, attr, value)
+                except Exception as e:
+                    Exception("Failed to load attribute {attr} from dictionary:\n" + repr(e))
+
+        return constraints

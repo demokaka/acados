@@ -84,16 +84,6 @@ classdef AcadosOcpDims < handle
         nsg_e   % number of soft general linear constraints at t=T
         % equalities within x bounds
         nbxe_0
-
-        % gnsf
-        % TODO these dimensions are not part of the corresponding python class (?)
-        gnsf_nx1
-        gnsf_nx2
-        gnsf_nz1
-        gnsf_nz2
-        gnsf_ny
-        gnsf_nuhat
-        gnsf_nout
     end
 
     methods
@@ -146,17 +136,9 @@ classdef AcadosOcpDims < handle
             obj.nsg_e = 0;
 
             obj.nbxe_0 = 0;
-
-            obj.gnsf_nx1 = 0;
-            obj.gnsf_nx2 = 0;
-            obj.gnsf_nz1 = 0;
-            obj.gnsf_nz2 = 0;
-            obj.gnsf_ny = 0;
-            obj.gnsf_nuhat = 0;
-            obj.gnsf_nout = 0;
         end
 
-        function s = struct(self)
+        function s = to_struct(self)
             if exist('properties')
                 publicProperties = eval('properties(self)');
             else
@@ -165,6 +147,23 @@ classdef AcadosOcpDims < handle
             s = struct();
             for fi = 1:numel(publicProperties)
                 s.(publicProperties{fi}) = self.(publicProperties{fi});
+            end
+        end
+    end
+    methods (Static)
+        function obj = from_struct(s)
+            % Create AcadosOcpDims from a struct (e.g. decoded from JSON).
+            obj = AcadosOcpDims();
+            fields = fieldnames(s);
+            for i = 1:length(fields)
+                f = fields{i};
+                % direct assignment for simple fields
+                try
+                    obj.(f) = s.(f);
+                catch
+                    % ignore unknown fields
+                    warning(['Could not assign field ' f ' in AcadosOcpDims.from_struct']);
+                end
             end
         end
     end

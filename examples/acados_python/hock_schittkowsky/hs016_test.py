@@ -85,9 +85,10 @@ def solve_problem(qp_solver: str = 'FULL_CONDENSING_HPIPM', scale_qp_constraints
     if scale_qp_constraints:
         ocp.solver_options.qpscaling_scale_objective = 'OBJECTIVE_GERSHGORIN'
         ocp.solver_options.qpscaling_scale_constraints = 'INF_NORM'
+
     ocp.code_export_directory = f'c_generated_code_{model.name}'
 
-    ocp_solver = AcadosOcpSolver(ocp, json_file=f'{model.name}.json', verbose=False)
+    ocp_solver = AcadosOcpSolver(ocp, verbose=False)
 
     # initialize solver
     xinit = np.array([-2, 1])
@@ -99,7 +100,7 @@ def solve_problem(qp_solver: str = 'FULL_CONDENSING_HPIPM', scale_qp_constraints
     # get solution
     assert status == 0, f"Solver failed with status {status}"
 
-    sol = ocp_solver.store_iterate_to_flat_obj()
+    sol = ocp_solver.get_flat_iterate()
 
     return sol
 

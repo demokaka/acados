@@ -33,8 +33,6 @@ import inspect, warnings
 
 import casadi as ca
 import numpy as np
-from deprecated.sphinx import deprecated
-
 from casadi import MX, SX
 
 from .utils import is_empty, casadi_length
@@ -47,10 +45,12 @@ class AcadosModel():
     that are needed when creating an acados ocp solver or acados integrator.
     Thus, this class contains:
 
-    a) the :py:attr:`name` of the model,
+    a) the model :py:attr:`name`,
     b) all CasADi variables/expressions needed in the CasADi function generation process.
     """
     def __init__(self):
+
+        self.__non_expression_properties = ["name", "dyn_ext_fun_type", "dyn_generic_source", "gnsf_model", "nu_original", "t0", "x_labels", "u_labels", "t_label"]
         ## common for OCP and Integrator
         self.__name = None
         self.__x = []
@@ -60,11 +60,15 @@ class AcadosModel():
         self.__p = []
         self.__t = []
         self.__p_global = []
+        self.__pi = []
 
         ## dynamics
         self.__f_impl_expr = []
         self.__f_expl_expr = []
+
         self.__disc_dyn_expr = []
+        self.__disc_dyn_custom_jac_ux_expr = []
+        self.__disc_dyn_custom_hess_ux_expr = []
 
         self.__dyn_ext_fun_type = 'casadi'
         self.__dyn_generic_source = None
@@ -76,9 +80,8 @@ class AcadosModel():
         self.__dyn_impl_dae_jac = None
         self.__dyn_impl_dae_fun = None
 
-        # for GNSF models
-        self.__gnsf_nontrivial_f_LO = 1
-        self.__gnsf_purely_linear = 0
+        # for GNSF model
+        self.__gnsf_model = None
 
         ### for OCP only.
         # NOTE: These could be moved to cost / constraints
@@ -141,11 +144,13 @@ class AcadosModel():
 
     @name.setter
     def name(self, name):
+        if not isinstance(name, str):
+            raise TypeError(f"AcadosModel.name should be str, got {type(name)}.")
         self.__name = name
 
     @property
     def x(self):
-        """CasADi variable describing the state of the system;
+        """CasADi variable describing the state of the system.
         Default: :code:`[]`
         """
         return self.__x
@@ -156,7 +161,7 @@ class AcadosModel():
 
     @property
     def xdot(self):
-        """CasADi variable describing the derivative of the state wrt time;
+        """CasADi variable describing the derivative of the state w.r.t. time.
         Default: :code:`[]`
         """
         return self.__xdot
@@ -167,7 +172,7 @@ class AcadosModel():
 
     @property
     def u(self):
-        """CasADi variable describing the derivative of the state wrt time;
+        """CasADi variable describing the control input.
         Default: :code:`[]`
         """
         return self.__u
@@ -178,7 +183,7 @@ class AcadosModel():
 
     @property
     def z(self):
-        """CasADi variable describing the algebraic variables of the DAE;
+        """CasADi variable describing the algebraic variables of the DAE.
         Default: :code:`[]`
         """
         return self.__z
@@ -231,6 +236,19 @@ class AcadosModel():
         self.__p_global = p_global
 
     @property
+    def pi(self):
+        """CasADi variable for multipliers of dynamics constraints.
+        Optional: only needed to define custom Hessian of dynamics.
+
+        Default: :code:`[]`
+        """
+        return self.__pi
+
+    @pi.setter
+    def pi(self, pi):
+        self.__pi = pi
+
+    @property
     def f_impl_expr(self):
         r"""
         CasADi expression for the implicit dynamics :math:`f_\text{impl}(\dot{x}, x, u, z, p) = 0`.
@@ -268,6 +286,39 @@ class AcadosModel():
     @disc_dyn_expr.setter
     def disc_dyn_expr(self, disc_dyn_expr):
         self.__disc_dyn_expr = disc_dyn_expr
+
+    @property
+    def disc_dyn_custom_jac_ux_expr(self):
+        r"""
+        Optional CasADi expression for an (approximate) Jacobian of disc_dyn_expr wrt [u, x].
+        Shape should be (nx_next, nu+nx).
+        Used if :py:attr:`acados_template.acados_ocp_options.AcadosOcpOptions.integrator_type` == 'DISCRETE'.
+        Use with care, this changes the solution of the OCP!
+        Default: :code:`[]`
+        """
+        return self.__disc_dyn_custom_jac_ux_expr
+
+    @disc_dyn_custom_jac_ux_expr.setter
+    def disc_dyn_custom_jac_ux_expr(self, disc_dyn_custom_jac_ux_expr):
+        self.__disc_dyn_custom_jac_ux_expr = disc_dyn_custom_jac_ux_expr
+
+
+    @property
+    def disc_dyn_custom_hess_ux_expr(self):
+        r"""
+        Optional CasADi expression for an (approximate) Hessian of :math:`\sum_{i=1}^{n{x,+}}(\pi_i * \phi_i(x,u))` wrt :math:`[u, x]`
+        Shape should be (nu+nx, nu+nx).
+        Note: :math:`\pi` are the multipliers of the dynamics constraints: :py:attr:`acados_template.acados_model.AcadosModel.pi`, :math:`\phi` is the discrete dynamics :py:attr:`acados_template.acados_model.AcadosModel.disc_dyn_expr` and :math:`n_{x,+}` is the dimension of the next state, :py:attr:`acados_template.acados_dims.AcadosOcpDims.nx_next`.
+        Used if :py:attr:`acados_template.acados_ocp_options.AcadosOcpOptions.integrator_type` == 'DISCRETE' and algorithm uses Hessian of dynamics.
+
+        Default: :code:`[]`
+        """
+        return self.__disc_dyn_custom_hess_ux_expr
+
+    @disc_dyn_custom_hess_ux_expr.setter
+    def disc_dyn_custom_hess_ux_expr(self, disc_dyn_custom_hess_ux_expr):
+        self.__disc_dyn_custom_hess_ux_expr = disc_dyn_custom_hess_ux_expr
+
 
     @property
     def dyn_ext_fun_type(self):
@@ -318,8 +369,6 @@ class AcadosModel():
     def dyn_disc_fun_jac(self, dyn_disc_fun_jac):
         self.__dyn_disc_fun_jac = dyn_disc_fun_jac
 
-
-
     @property
     def dyn_disc_fun(self):
         """
@@ -369,26 +418,19 @@ class AcadosModel():
         self.__dyn_impl_dae_fun = dyn_impl_dae_fun
 
     @property
-    def gnsf_nontrivial_f_LO(self):
+    def gnsf_model(self):
         """
-        GNSF: Flag indicating whether GNSF stucture has nontrivial f.
+        GNSF: AcadosModel object containing the GNSF representation of the dynamics.
+        Default: :code:`None`
         """
-        return self.__gnsf_nontrivial_f_LO
+        return self.__gnsf_model
 
-    @gnsf_nontrivial_f_LO.setter
-    def gnsf_nontrivial_f_LO(self, gnsf_nontrivial_f_LO):
-        self.__gnsf_nontrivial_f_LO = gnsf_nontrivial_f_LO
-
-    @property
-    def gnsf_purely_linear(self):
-        """
-        GNSF: Flag indicating whether GNSF stucture is purely linear.
-        """
-        return self.__gnsf_purely_linear
-
-    @gnsf_purely_linear.setter
-    def gnsf_purely_linear(self, gnsf_purely_linear):
-        self.__gnsf_purely_linear = gnsf_purely_linear
+    @gnsf_model.setter
+    def gnsf_model(self, gnsf_model):
+        from .gnsf import GnsfModel
+        if not isinstance(gnsf_model, GnsfModel):
+            raise TypeError("gnsf_model must be of type GnsfModel")
+        self.__gnsf_model = gnsf_model
 
     @property
     def con_h_expr_0(self):
@@ -786,7 +828,7 @@ class AcadosModel():
     def x_labels(self):
         """Contains list of labels for the states. Default: :code:`None`"""
         if self.__x_labels is None:
-            return [f"x{i}" for i in range(self.x.size()[0])]
+            return [f"x{i}" for i in range(self.x.size()[0])] if not is_empty(self.x) else []
         else:
             return self.__x_labels
 
@@ -799,7 +841,7 @@ class AcadosModel():
     def u_labels(self):
         """Contains list of labels for the controls. Default: :code:`None`"""
         if self.__u_labels is None:
-            return [f"u{i}" for i in range(self.u.size()[0])]
+            return [f"u{i}" for i in range(self.u.size()[0])] if not is_empty(self.u) else []
         else:
             return self.__u_labels
 
@@ -809,7 +851,7 @@ class AcadosModel():
 
     @property
     def t_label(self):
-        """Label for the time variable. Default: :code:'t'"""
+        """Label for the time variable. Default: :code:`'t'`"""
         return self.__t_label
 
     @t_label.setter
@@ -835,6 +877,9 @@ class AcadosModel():
 
 
     def make_consistent(self, dims: Union[AcadosOcpDims, AcadosSimDims]) -> None:
+
+        if self.name is None:
+            raise ValueError("Please set AcadosModel.name, got None.")
 
         casadi_symbol = self.get_casadi_symbol()
 
@@ -870,8 +915,25 @@ class AcadosModel():
             self.p_global = casadi_symbol('p_global', 0, 1)
         dims.np_global = casadi_length(self.p_global)
 
-        # sanity checks
-        for symbol, name in [(self.x, 'x'), (self.xdot, 'xdot'), (self.u, 'u'), (self.z, 'z'), (self.p, 'p'), (self.p_global, 'p_global')]:
+        # model output dimension nx_next: dimension of the next state
+        if isinstance(dims, AcadosOcpDims):
+            if not is_empty(self.disc_dyn_expr):
+                dims.nx_next = casadi_length(self.disc_dyn_expr)
+            else:
+                dims.nx_next = casadi_length(self.x)
+            if not is_empty(self.disc_dyn_custom_jac_ux_expr):
+                if self.disc_dyn_custom_jac_ux_expr.shape != (dims.nx_next, dims.nu + dims.nx):
+                    raise ValueError(f"model.disc_dyn_custom_jac_ux_expr must have shape (nx_next, nu + nx) = ({dims.nx_next}, {dims.nu} + {dims.nx}), got {self.disc_dyn_custom_jac_ux_expr.shape}")
+            nx_next = dims.nx_next
+        else:
+            nx_next = dims.nx
+
+        # pi default
+        if is_empty(self.pi):
+            self.pi = casadi_symbol('pi', nx_next, 1)
+
+        # sanity check symbols
+        for symbol, name in [(self.x, 'x'), (self.xdot, 'xdot'), (self.u, 'u'), (self.z, 'z'), (self.p, 'p'), (self.p_global, 'p_global'), (self.pi, 'pi')]:
             if not isinstance(symbol, (ca.MX, ca.SX)):
                 raise TypeError(f"model.{name} must be casadi.MX, casadi.SX got {type(symbol)}")
             if not symbol.is_valid_input():
@@ -884,13 +946,7 @@ class AcadosModel():
             if any(ca.which_depends(self.p_global, self.p)):
                 raise ValueError(f"model.p_global must not depend on model.p, got p_global ={self.p_global}, p = {self.p}")
 
-        # model output dimension nx_next: dimension of the next state
-        if isinstance(dims, AcadosOcpDims):
-            if not is_empty(self.disc_dyn_expr):
-                dims.nx_next = casadi_length(self.disc_dyn_expr)
-            else:
-                dims.nx_next = casadi_length(self.x)
-
+        # check f_impl, f_expl
         if not is_empty(self.f_impl_expr):
             if casadi_length(self.f_impl_expr) != (dims.nx + dims.nz):
                 raise ValueError(f"model.f_impl_expr must have length nx + nz = {dims.nx} + {dims.nz}, got {casadi_length(self.f_impl_expr)}")
@@ -910,11 +966,6 @@ class AcadosModel():
                 new = ca.substitute(value, var, expr_new)
                 setattr(self, attr, new)
         return
-
-
-    @deprecated(version="0.4.0", reason="Use `reformulate_with_polynomial_control()` instead.")
-    def augment_model_with_polynomial_control(self, degree: int) -> None:
-        self.reformulate_with_polynomial_control(degree=degree)
 
 
     def reformulate_with_polynomial_control(self, degree: int) -> None:
@@ -1003,12 +1054,16 @@ class AcadosModel():
         Convert the AcadosModel to a dictionary.
         """
 
+        from .gnsf import GnsfModel
         model_dict = {}
 
         for k, _ in inspect.getmembers(type(self), lambda v: isinstance(v, property)):
             v = getattr(self, k)
             if isinstance(v, (ca.SX, ca.MX)):
-                model_dict[k] = repr(v) # only for debugging
+                pass
+                # model_dict[k] = repr(v) # only for debugging, but this does break comparison of loaded objects.
+            elif isinstance(v, GnsfModel):
+                model_dict[k] = v.to_dict()
             else:
                 model_dict[k] = v
 
@@ -1023,10 +1078,11 @@ class AcadosModel():
         Create an AcadosModel from a dictionary.
         Values that correspond to the empty list are ignored.
         """
+        from .gnsf import GnsfModel
 
         model = cls()
 
-        expression_names =  model_dict.get('expression_names')
+        expression_names = model_dict.get('expression_names')
         serialized_expressions = model_dict.get('serialized_expressions')
 
         if expression_names is None or serialized_expressions is None:
@@ -1037,16 +1093,21 @@ class AcadosModel():
 
             value = model_dict.get(attr)
 
+            if attr == 'gnsf_model' and value is not None:
+                try:
+                    gnsf_model = GnsfModel.from_dict(value)
+                    setattr(model, attr, gnsf_model)
+                except Exception as e:
+                    print("Failed to load gnsf_model from dictionary. If formulation objects are exchanged between MATLAB/Octave and Python, this is a known issue, not loading gnsf_model.\n Got error:\n" + repr(e))
             # expressions are expected to be None
-            if value is None and attr not in expression_names:
+            elif value is None and attr in model.__non_expression_properties:
                 warnings.warn(f"Attribute {attr} not in dictionary.")
             else:
                 try:
-                    # check whether value is not the empty list and not a CasADi symbol/expression
                     if not (isinstance(value, list) and not value) and not attr in expression_names:
                         setattr(model, attr, value)
                 except Exception as e:
-                    Exception("Failed to load attribute {attr} from dictionary:\n" + repr(e))
+                    Exception(f"Failed to load attribute {attr} from dictionary:\n" + repr(e))
 
         model.deserialize(model_dict['serialized_expressions'], model_dict['expression_names'])
 

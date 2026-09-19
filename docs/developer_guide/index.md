@@ -1,4 +1,11 @@
 # Developer Guide
+
+``` eval_rst
+.. meta::
+   :description: Developer guide for extending acados including contribution guidelines, memory management conventions, continuous integration, test development, regularization methods, and QP solution handling.
+   :keywords: acados development, contributing to acados, acados memory management, acados testing, CI guidelines, acados architecture, SQP regularization, QP solver development
+```
+
 This page contains additional information for people who want to extend `acados`.
 
 ## Contributing
@@ -9,6 +16,17 @@ Contributions are handled via pull requests on Github
 - Describe what you changed and why
 - Rather make minimal changes
 - Rather more commits than less
+- Add a test
+
+
+## Tests on continuous integration via Github actions (GA)
+When adding a test or example, it is useful to make it run on GA.
+To do so: edit the following files:
+- For Python: `.github/workflows/full_build.yml`
+- For MATLAB:
+  - tests: `examples/acados_matlab_octave/test/run_matlab_tests.m`
+  - examples: `examples/acados_matlab_octave/test/test_all_examples.m`
+
 
 ## Memory management in `acados`
 The following are guidelines on how memory should be assigned for an `acados` structure `astruct`.
@@ -92,8 +110,11 @@ Should assign its members in the following order:
    - relevant if no `blasfeo_mems` are in `astruct`
 
 
-## Regularization within SQP / SQP-RTI
-The Hessian of the QP is computed in the `ocp_nlp_sqp`, `ocp_nlp_sqp_rti` module respectively.
+## Hessian computation and regularization
+The Hessian of the QP is computed in the respective OCP-NLP solver module.
+
+NOTE: Since symmetry can be assumed, `acados` only computes the lower triangular part of the Hessian.
+Modules (e.g. QP solvers) that need the full Hessian need to symmetrize it.
 
 The following steps are carried out:
 
@@ -107,11 +128,17 @@ The following steps are carried out:
 - `ocp_nlp_add_levenberg_marquardt_term()`:
     - add to the diagonal of the Hessian of block `i` the term `scaling[i] * opts->levenberg_marquardt`
 
+- QP scaling is applied (optional)
+
 - call the regularization module (`regularize`, see [`regularize_method`](https://docs.acados.org/python_interface/index.html?highlight=regularize#acados_template.acados_ocp_options.AcadosOcpOptions.regularize_method))
 
 <!-- TODO: change this to have a seperate levenberg_marquardt term on the terminal stage (instead of 1 replacing Ts).
 + add the option to provide a vector that is added on diagonal, i.e. make levenberg_marquardt a vector of size nx+nu. -->
 
+
+### Hessian computation by module
+While only the lower triangular part of the Hessian should be computed, some modules actually compute the full Hessian.
+This is tracked in https://github.com/acados/acados/issues/1920.
 
 
 ## Dense QP solution: Populating `dense_qp_out`

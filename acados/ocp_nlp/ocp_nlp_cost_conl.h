@@ -56,32 +56,6 @@ extern "C" {
 
 
 /************************************************
- * dims
- ************************************************/
-
-typedef struct
-{
-    int nx;  // number of states
-    int nz;  // number of algebraic variables
-    int nu;  // number of inputs
-    int ny;  // number of outputs
-    int ns;  // number of slacks
-} ocp_nlp_cost_conl_dims;
-
-//
-acados_size_t ocp_nlp_cost_conl_dims_calculate_size(void *config);
-//
-void *ocp_nlp_cost_conl_dims_assign(void *config, void *raw_memory);
-//
-void ocp_nlp_cost_conl_dims_initialize(void *config, void *dims, int nx, int nu, int ny, int ns, int nz);
-//
-void ocp_nlp_cost_conl_dims_set(void *config_, void *dims_, const char *field, int* value);
-//
-void ocp_nlp_cost_conl_dims_get(void *config_, void *dims_, const char *field, int* value);
-
-
-
-/************************************************
  * model
  ************************************************/
 
@@ -91,9 +65,7 @@ typedef struct
     external_function_generic *conl_cost_fun;
     external_function_generic *conl_cost_fun_jac_hess;
     struct blasfeo_dvec y_ref;
-    struct blasfeo_dvec Z;              // diagonal Hessian of slacks as vector
-    struct blasfeo_dvec z;              // gradient of slacks as vector
-    double scaling;
+    ocp_nlp_cost_common_model *common;  ///< fields shared across cost modules
     double t; // time (always zero) to match signature of external function wrt cost integration
 } ocp_nlp_cost_conl_model;
 
@@ -110,23 +82,12 @@ int ocp_nlp_cost_conl_model_set(void *config_, void *dims_, void *model_, const 
  * options
  ************************************************/
 
-typedef struct
-{
-    bool gauss_newton_hess;  // dummy options, we always use a gauss-newton hessian
-    int integrator_cost; // > 0 indicating that cost is propagated within integrator instead of cost module, only add slack contributions
-    int add_hess_contribution;
-} ocp_nlp_cost_conl_opts;
+// NOTE: the CONL cost always uses a Gauss-Newton Hessian,
+//       the "exact_hess" option is ignored (checked in ocp_nlp_cost_conl_opts_update).
+typedef ocp_nlp_cost_common_opts ocp_nlp_cost_conl_opts;
 
 //
-acados_size_t ocp_nlp_cost_conl_opts_calculate_size(void *config, void *dims);
-//
-void *ocp_nlp_cost_conl_opts_assign(void *config, void *dims, void *raw_memory);
-//
-void ocp_nlp_cost_conl_opts_initialize_default(void *config, void *dims, void *opts);
-//
 void ocp_nlp_cost_conl_opts_update(void *config, void *dims, void *opts);
-//
-void ocp_nlp_cost_conl_opts_set(void *config, void *opts, const char *field, void *value);
 
 
 
@@ -135,16 +96,10 @@ void ocp_nlp_cost_conl_opts_set(void *config, void *opts, const char *field, voi
  ************************************************/
 typedef struct
 {
-    struct blasfeo_dvec grad;    // gradient of cost function
-    struct blasfeo_dvec *ux;     // pointer to ux in nlp_out
-    struct blasfeo_dmat *RSQrq;  // pointer to RSQrq in qp_in
-    struct blasfeo_dvec *Z;      // pointer to Z in qp_in
-    struct blasfeo_dvec *z_alg;         ///< pointer to z in sim_out
-    struct blasfeo_dmat *dzdux_tran;    ///< pointer to sensitivity of a wrt ux in sim_out
+    ocp_nlp_cost_common_memory *common;  ///< fields shared across cost modules
     struct blasfeo_dmat W_chol;        // cholesky factor of hessian of outer loss function
     struct blasfeo_dvec W_chol_diag;   // cholesky factor of hessian of outer loss function if Hessian is diagonal
         // NOTE: could be in work, but needed for compatibility with NLS and cost integration
-    double fun;                         ///< value of the cost function
     double outer_hess_is_diag;
 } ocp_nlp_cost_conl_memory;
 
@@ -153,19 +108,7 @@ acados_size_t ocp_nlp_cost_conl_memory_calculate_size(void *config, void *dims, 
 //
 void *ocp_nlp_cost_conl_memory_assign(void *config, void *dims, void *opts, void *raw_memory);
 //
-double *ocp_nlp_cost_conl_memory_get_fun_ptr(void *memory_);
-//
-struct blasfeo_dvec *ocp_nlp_cost_conl_memory_get_grad_ptr(void *memory_);
-//
-void ocp_nlp_cost_conl_memory_set_RSQrq_ptr(struct blasfeo_dmat *RSQrq, void *memory);
-//
-void ocp_nlp_cost_conl_memory_set_Z_ptr(struct blasfeo_dvec *Z, void *memory);
-//
-void ocp_nlp_cost_conl_memory_set_ux_ptr(struct blasfeo_dvec *ux, void *memory_);
-//
-void ocp_nlp_cost_conl_memory_set_z_alg_ptr(struct blasfeo_dvec *z_alg, void *memory_);
-//
-void ocp_nlp_cost_conl_memory_set_dzdux_tran_ptr(struct blasfeo_dmat *dzdux_tran, void *memory_);
+void *ocp_nlp_cost_conl_memory_get(void *memory_, const char *field);
 
 /************************************************
  * workspace
@@ -178,6 +121,8 @@ typedef struct
     struct blasfeo_dmat Jt_ux_tilde;   // jacobian of inner residual function plus gradient contribution of algebraic variables
     struct blasfeo_dmat Jt_z;          // jacobian of inner residual function wrt algebraic variables
     struct blasfeo_dmat tmp_nv_ny;
+    struct blasfeo_dmat tmp_nv_ny2;
+    struct blasfeo_dmat J_y_tilde;     // workspace for integrator cost
     struct blasfeo_dvec tmp_ny;
     struct blasfeo_dvec tmp_2ns;
 } ocp_nlp_cost_conl_workspace;
@@ -208,6 +153,7 @@ void ocp_nlp_cost_conl_compute_fun(void *config_, void *dims, void *model_, void
 void ocp_nlp_cost_conl_compute_jac_p(void *config_, void *dims, void *model_, void *opts_, void *memory_, void *work_);
 //
 void ocp_nlp_cost_conl_eval_grad_p(void *config_, void *dims, void *model_, void *opts_, void *memory_, void *work_, struct blasfeo_dvec *out);
+
 
 #ifdef __cplusplus
 } /* extern "C" */

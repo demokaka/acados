@@ -29,6 +29,7 @@
 #
 
 import numpy as np
+import warnings, inspect
 from .utils import cast_to_2d_nparray, cast_to_2d_nparray_or_casadi_symbolic, cast_to_1d_nparray_or_casadi_symbolic, cast_to_1d_nparray
 
 class AcadosOcpCost:
@@ -134,6 +135,7 @@ class AcadosOcpCost:
     @property
     def W_0(self):
         """:math:`W_0` - weight matrix at initial shooting node (0).
+        Needs to be positive definite or diagonal and positive semidefinite.
         Default: :code:`None`.
         """
         return self.__W_0
@@ -223,6 +225,7 @@ class AcadosOcpCost:
     @property
     def W(self):
         """:math:`W` - weight matrix at intermediate shooting nodes (1 to N-1).
+        Needs to be positive definite or diagonal and positive semidefinite.
         Default: :code:`np.zeros((0,0))`.
         """
         return self.__W
@@ -355,6 +358,7 @@ class AcadosOcpCost:
     @property
     def W_e(self):
         """:math:`W_e` - weight matrix at terminal shooting node (N).
+        Needs to be positive definite or diagonal and positive semidefinite.
         Default: :code:`np.zeros((0,0))`.
         """
         return self.__W_e
@@ -492,3 +496,30 @@ class AcadosOcpCost:
 
     def set(self, attr, value):
         setattr(self, attr, value)
+
+
+    @classmethod
+    def from_dict(cls, dict):
+        """
+        Load all properties from a given dictionary (obtained from loading a generated json).
+        Values that correspond to the empty list are ignored.
+        """
+
+        cost = cls()
+
+        # loop over all properties
+        for attr, _ in inspect.getmembers(type(cost), lambda v: isinstance(v, property)):
+
+            value = dict.get(attr)
+
+            if value is None:
+                warnings.warn(f"Attribute {attr} not in dictionary.")
+            else:
+                try:
+                    # check whether value is not the empty list
+                    if not (isinstance(value, list) and not value):
+                        setattr(cost, attr, value)
+                except Exception as e:
+                    Exception("Failed to load attribute {attr} from dictionary:\n" + repr(e))
+
+        return cost

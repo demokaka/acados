@@ -42,6 +42,7 @@ targets = {
     '../getting_started/extensive_example_ocp.m';
     '../getting_started/minimal_example_sim.m';
     '../getting_started/minimal_example_ocp.m';
+    '../getting_started/minimal_example_closed_loop.m';
     '../linear_mass_spring_model/example_ocp.m';
     '../linear_mpc/main.m';
     '../lorentz/example_mhe.m';
@@ -59,12 +60,12 @@ targets = {
     '../legacy_interface/getting_started/extensive_example_ocp.m';
     '../legacy_interface/simple_dae_model/example_ocp.m';
     '../dense_nlp/convex_problem_globalization_necessary.m';
+    '../pendulum_on_cart_model/example_sim.m';
 };
 
 
 % not tested on CI
 other_targets = {
-    '../getting_started/minimal_example_closed_loop.m';
     '../getting_started/simulink_example.m';
     '../getting_started/simulink_example_advanced.m';
     '../linear_mass_spring_model/example_closed_loop.m';
@@ -74,14 +75,12 @@ other_targets = {
     '../pendulum_on_cart_model/example_ocp_custom_hess.m';
     '../pendulum_on_cart_model/example_ocp_param_sens.m';
     '../pendulum_on_cart_model/example_ocp_reg.m';
-    '../pendulum_on_cart_model/example_sim.m';
     '../pendulum_on_cart_model/example_solution_sens_closed_loop.m';
     '../pendulum_on_cart_model/experiment_dae_formulation.m';
     '../swarming/example_closed_loop.m';
     '../swarming/example_sim.m';
     '../wind_turbine_nx6/example_closed_loop.m';
     '../wind_turbine_nx6/example_sim.m';
-
     './test_checks.m';
     './test_mhe_lorentz.m';
     './test_ocp_OSQP.m';
@@ -110,8 +109,8 @@ for idx = 1:length(targets)
     % clear variables that might contain CasADi objects to avoid SWIG
     % warnings
     clear ocp_solver ocp ocp_model model sim sim_model sim_solver params
-    save(strcat(testpath, "/test_workspace.mat"))
-    setenv("LD_RUN_PATH", strcat(testpath, "/", dir, "/c_generated_code"))
+    save(fullfile(testpath, "test_workspace.mat"))
+    setenv("LD_RUN_PATH", fullfile(testpath, dir, "c_generated_code"))
 
     try
         run(targets{idx});
@@ -123,20 +122,30 @@ for idx = 1:length(targets)
         test_val = false;
     end
 
-    % use absolute path, since current directory depends on point of failure
     testpath = getenv("TEST_DIR");
-    load(strcat(testpath, "/test_workspace.mat"));
-    disp(['test', targets{idx},' success'])
+    cd(testpath);
+
+    load(fullfile(testpath, "test_workspace.mat"));
+    if test_val
+        disp(['test ', targets{idx},' was successful'])
+    end
     messages{idx} = getenv("TEST_MESSAGE");
     if contains(targets{idx},'simulink'); bdclose('all'); end
-    delete(strcat(testpath, "/test_workspace.mat"));
+    delete(fullfile(testpath, "test_workspace.mat"));
+
     % delete generated code to avoid failure in examples using similar names
-    code_gen_dir = strcat(testpath, "/", dir, "/c_generated_code");
+    code_gen_dir = fullfile(testpath, dir, "c_generated_code");
+
     if exist(code_gen_dir, 'dir')
-        rmdir(code_gen_dir, 's')
+        clear ocp_solver ocp ocp_model model sim sim_model sim_solver params
+        clear mex
+        clear functions
+        rehash
+
+        rmpath(code_gen_dir);
+        rmdir(code_gen_dir, 's');
     end
     close all;
-    % clc;
 end
 
 % clc;

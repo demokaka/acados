@@ -123,7 +123,7 @@ def create_solver(solver_name: str, nlp_solver_type: str = 'SQP_WITH_FEASIBLE_QP
         ocp.solver_options.qpscaling_scale_objective = "OBJECTIVE_GERSHGORIN"
 
     # create ocp solver
-    ocp_solver = AcadosOcpSolver(ocp)
+    ocp_solver = AcadosOcpSolver(ocp, verbose=False)
 
     return ocp, ocp_solver
 
@@ -134,7 +134,7 @@ def check_qp_scaling(ocp_solver: AcadosOcpSolver):
     else:
         print(f"QP scaling reported issues with status {qpscaling_status}.")
 
-    if ocp_solver.acados_ocp.solver_options.qpscaling_scale_constraints == "NO_CONSTRAINT_SCALING":
+    if ocp_solver.ocp.solver_options.qpscaling_scale_constraints == "NO_CONSTRAINT_SCALING":
         try:
             constraint_scaling = ocp_solver.get_qp_scaling_constraints(0)
         except Exception as e:
@@ -161,7 +161,7 @@ def call_solver(ocp_solver: AcadosOcpSolver) -> AcadosOcpFlattenedIterate:
         print(f'acados returned status {status}.')
 
     print(f"cost function value = {ocp_solver.get_cost()} after {sqp_iter} SQP iterations")
-    sol = ocp_solver.store_iterate_to_flat_obj()
+    sol = ocp_solver.get_flat_iterate()
     return sol
 
 def check_solutions(sol_list: list[AcadosOcpFlattenedIterate], soft_h: bool):
@@ -251,7 +251,11 @@ def test_qp_scaling(soft_h: bool = True):
     except ValueError as e:
         print(f"Got different iterations when using different QP tolerances, as expected.")
     else:
-        raise ValueError("Iteration residuals should differ when using different QP tolerances, but they do not.")
+        if not soft_h:
+            raise ValueError("Iteration residuals should differ when using different QP tolerances, but they do not.")
+        else:
+            pass
+            # with orphan slack detection this is less sensitive to the tolerance.
 
 def test_sanity_check(soft_h: bool = True, use_qp_scaling: bool = True):
     print("Sanity Check SQP and SQP_WITH_FEASIBLE_QP solver...")

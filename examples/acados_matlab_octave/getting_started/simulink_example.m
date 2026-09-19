@@ -1,35 +1,36 @@
 %% Simulink example
-%
 clear all; clc;
 
 %% Run minimal example
 % get default simulink_opts
-simulink_opts = get_acados_simulink_opts;
+simulink_opts = AcadosOcpSimulinkOptions();
 minimal_example_ocp;
 
 
 %% Compile Sfunctions
-cd c_generated_code
+cd(ocp.code_gen_options.code_export_directory);
 
 make_sfun; % ocp solver
 make_sfun_sim; % integrator
 
 
-%% Copy Simulink example blocks into c_generated_code
+%% Copy Simulink example blocks into code_export_directory
 source_folder = fullfile(pwd, '..');
 target_folder = pwd;
-copyfile( fullfile(source_folder, 'simulink_model_integrator.slx'), target_folder );
-copyfile( fullfile(source_folder, 'simulink_model_closed_loop.slx'), target_folder );
+copyfile(fullfile(source_folder, 'simulink_model_integrator.slx'), ...
+         fullfile(target_folder, 'simulink_model_integrator_copy.slx'));
+copyfile(fullfile(source_folder, 'simulink_model_closed_loop.slx'), ...
+         fullfile(target_folder, 'simulink_model_closed_loop_copy.slx'));
 
 
 %% Open Simulink example blocks
-open_system(fullfile(target_folder, 'simulink_model_integrator'))
-open_system(fullfile(target_folder, 'simulink_model_closed_loop'))
+open_system(fullfile(target_folder, 'simulink_model_integrator_copy'))
+open_system(fullfile(target_folder, 'simulink_model_closed_loop_copy'))
 
 
 %% Run the models
 try
-    sim('simulink_model_integrator.slx');
+    sim('simulink_model_integrator_copy.slx');
     cd ..
 catch
     cd ..
@@ -37,10 +38,11 @@ catch
 end
 
 try
-    cd c_generated_code
-    sim('simulink_model_closed_loop.slx');
+    cd(ocp.code_gen_options.code_export_directory);
+    sim('simulink_model_closed_loop_copy.slx');
     cd ..
 catch
     cd ..
     error('Simulink closed loop example failed')
 end
+disp('Both simulations finished successfully.')

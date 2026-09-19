@@ -30,7 +30,7 @@
 
 import numpy as np
 from acados_template import AcadosOcpSolver
-from non_ocp_example import export_parametric_nlp
+from non_ocp_example import create_parametric_nlp
 
 # test barrier QP residuals
 def test_barrier_qp_residual():
@@ -38,15 +38,15 @@ def test_barrier_qp_residual():
     np_test = 50
     p_test = np.linspace(p_nominal, p_nominal + 2, np_test)
 
-    ocp = export_parametric_nlp()
+    ocp = create_parametric_nlp()
     ocp.solver_options.qp_solver_t0_init = 0
     ocp.solver_options.nlp_solver_ext_qp_res = 1
     ocp.solver_options.nlp_solver_max_iter = 2 # QP should converge in one iteration
     # test doesnt need solution sensitivities
-    ocp.solver_options.with_solution_sens_wrt_params = False
-    ocp.solver_options.with_value_sens_wrt_params = False
+    ocp.code_gen_options.with_solution_sens_wrt_params = False
+    ocp.code_gen_options.with_value_sens_wrt_params = False
 
-    ocp_solver = AcadosOcpSolver(ocp, json_file="parameter_augmented_acados_ocp.json", verbose=False)
+    ocp_solver = AcadosOcpSolver(ocp, verbose=False)
 
     for tau in [0.0, 1e-2, 1e-3]:
         ocp_solver.options_set("tau_min", tau)

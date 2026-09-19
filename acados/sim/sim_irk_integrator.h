@@ -46,8 +46,7 @@ typedef struct
     int nx;
     int nu;
     int nz;
-
-    int ny;  // for NLS cost propagation
+    int np;
 
 } sim_irk_dims;
 
@@ -65,12 +64,8 @@ typedef struct
     external_function_generic *impl_ode_jac_x_xdot_u_z;
     // hessian of implicit ode:
     external_function_generic *impl_ode_hess;
-
-    // for cost propagation
-    external_function_generic *nls_y_fun_jac;  // evaluation nls function and jacobian
-    external_function_generic *nls_y_fun;  // evaluation nls function
-    external_function_generic *conl_cost_fun_jac_hess;
-    external_function_generic *conl_cost_fun;
+    // Jacobian of implicit ode w.r.t. p
+    external_function_generic *impl_dae_jac_p;
 
 } irk_model;
 
@@ -78,7 +73,7 @@ typedef struct
 
 typedef struct
 {
-    struct blasfeo_dvec *rG;        // residuals of G (nx*ns)
+    struct blasfeo_dvec *rG;        // residuals of G ((nx+nz)*ns)
     struct blasfeo_dvec *K;         // internal K variables ((nx+nz)*ns)
     struct blasfeo_dvec *xt;        // temporary x
     struct blasfeo_dvec *xn;        // x at each integration step
@@ -121,6 +116,9 @@ typedef struct
     //         if ( opts->sens_hess) - array of blasfeo_dmat to store intermediate results
     struct blasfeo_dmat *dG_dK;   // jacobian of G over K ((nx+nz)*ns, (nx+nz)*ns)
 
+    struct blasfeo_dmat *dK_dp;  // sensitivity of K w.r.t p ((nx+nz)*ns, np)
+    struct blasfeo_dmat *df_dp;  // Jacobian of f w.r.t p (nx+nz, np)
+
     // ipiv: index of pivot vector
     //         if (!opts->sens_hess) - array (ns * (nx + nz)) that is reused
     //         if ( opts->sens_hess) - array (ns * (nx + nz)) * num_steps, to store all
@@ -140,18 +138,43 @@ typedef struct
     struct blasfeo_dmat tmp_dxkzu_dw0;  // size (2*nx + nu + nz) x (nx + nu)
 
     /* the following variables are only available if (opts->cost_propagation) */
-    struct blasfeo_dmat *J_y_tilde;
-    struct blasfeo_dmat *tmp_nux_ny;
-    struct blasfeo_dmat *tmp_nux_ny2;
     struct blasfeo_dmat *S_forw_stage;
-    struct blasfeo_dvec *tmp_ny;
-    struct blasfeo_dvec *nls_res;
-    // only for cost_propagation with CONVEX_OVER_NONLINEAR
-    struct blasfeo_dmat *W;
-    struct blasfeo_dmat *tmp_nv_ny;
-    struct blasfeo_dmat *Jt_z;
 
+    /* function argument vectors*/
+    ext_fun_arg_t impl_ode_type_in[5];
+    void *impl_ode_in[5];
 
+    ext_fun_arg_t impl_ode_fun_type_out[1];
+    void *impl_ode_fun_out[1];
+
+    ext_fun_arg_t impl_ode_fun_jac_x_xdot_z_type_out[4];
+    void *impl_ode_fun_jac_x_xdot_z_out[4];
+
+    ext_fun_arg_t impl_ode_jac_x_xdot_u_z_type_out[4];
+    void *impl_ode_jac_x_xdot_u_z_out[4];
+
+    ext_fun_arg_t impl_dae_jac_p_type_out[1];
+    void *impl_dae_jac_p_out[1];
+
+    ext_fun_arg_t impl_ode_hess_type_in[6];
+    void *impl_ode_hess_in[6];
+
+    ext_fun_arg_t impl_ode_hess_type_out[1];
+    void *impl_ode_hess_out[1];
+
+    struct blasfeo_dvec_args impl_ode_xdot_in;
+    struct blasfeo_dvec_args impl_ode_z_in;
+    struct blasfeo_dvec_args impl_ode_res_out;
+    struct blasfeo_dvec_args impl_ode_hess_lambda_in;
+
+    double t_current;
+
+    /* timers */
+    acados_timer timer_ad;
+    acados_timer timer_la;
+
+    double timing_ad;
+    double timing_la;
 } sim_irk_workspace;
 
 
@@ -164,15 +187,10 @@ typedef struct
     double time_ad;
     double time_la;
 
-    double *cost_fun;
-    double *outer_hess_is_diag;
-    double *cost_scaling_ptr;
-
-    struct blasfeo_dmat *W_chol;  // cholesky factor of weight matrix
-    struct blasfeo_dvec *W_chol_diag;
-    struct blasfeo_dvec *y_ref;  // y_ref for NLS cost
-    struct blasfeo_dvec *cost_grad;
+    void *cost_capsule;  // pointer to ocp_nlp_cost_capsule of the cost module
     struct blasfeo_dmat *cost_hess;
+
+    struct blasfeo_dmat *S_p;
 
 } sim_irk_memory;
 

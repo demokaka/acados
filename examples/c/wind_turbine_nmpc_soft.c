@@ -761,7 +761,7 @@ int main()
         {
             set_fun_status = ocp_nlp_dynamics_model_set(config, dims, nlp_in, i, "impl_ode_fun", &impl_ode_fun[i]);
             if (set_fun_status != 0) exit(1);
-            set_fun_status = ocp_nlp_dynamics_model_set(config, dims, nlp_in, i, "impl_ode_fun_jac_x_xdot", &impl_ode_fun_jac_x_xdot[i]);
+            set_fun_status = ocp_nlp_dynamics_model_set(config, dims, nlp_in, i, "impl_ode_fun_jac_x_xdot_z", &impl_ode_fun_jac_x_xdot[i]);
             if (set_fun_status != 0) exit(1);
             set_fun_status = ocp_nlp_dynamics_model_set(config, dims, nlp_in, i, "impl_ode_jac_x_xdot_u", &impl_ode_jac_x_xdot_u[i]);
             if (set_fun_status != 0) exit(1);
@@ -1070,7 +1070,7 @@ int main()
                     // ocp_nlp_res *residual;
                     // ocp_nlp_get(solver, "nlp_res", &residual);
                     // printf("\nresiduals\n");
-                    // ocp_nlp_res_print(dims, residual);
+                    // print_ocp_nlp_res(dims, residual);
                     // exit(1);
                 // }
             // }

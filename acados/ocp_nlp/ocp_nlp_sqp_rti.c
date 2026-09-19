@@ -114,7 +114,7 @@ void ocp_nlp_sqp_rti_opts_initialize_default(void *config_,
 
     // SQP RTI opts
     opts->nlp_opts->warm_start_first_qp_from_nlp = true;
-    opts->rti_phase = 0;
+    opts->rti_phase = PREPARATION_AND_FEEDBACK;
     opts->as_rti_level = STANDARD_RTI;
     opts->as_rti_advancement_strategy = SIMULATE_ADVANCE;
     opts->as_rti_iter = 0;
@@ -132,6 +132,12 @@ void ocp_nlp_sqp_rti_opts_update(void *config_, void *dims_, void *opts_)
     ocp_nlp_config *config = config_;
     ocp_nlp_sqp_rti_opts *opts = opts_;
     ocp_nlp_opts *nlp_opts = opts->nlp_opts;
+
+    if (opts->as_rti_level != STANDARD_RTI)
+    {
+        // AS-RTI does not support PREPARATION_AND_FEEDBACK, which is the default otherwise.
+        opts->rti_phase = PREPARATION;
+    }
 
     ocp_nlp_opts_update(config, dims, nlp_opts);
 
@@ -421,7 +427,7 @@ static void prepare_full_residual_computation(ocp_nlp_config *config,
     {
         // nlp mem: cost_grad
         config->cost[i]->compute_gradient(config->cost[i], dims->cost[i], in->cost[i], opts->cost[i], mem->cost[i], work->cost[i]);
-        struct blasfeo_dvec *cost_grad = config->cost[i]->memory_get_grad_ptr(mem->cost[i]);
+        struct blasfeo_dvec *cost_grad = config->cost[i]->memory_get(mem->cost[i], "grad");
         blasfeo_dveccp(nv[i], cost_grad, 0, mem->cost_grad + i, 0);
 
         // nlp mem: dyn_adj
@@ -464,6 +470,15 @@ static void ocp_nlp_sqp_rti_preparation_step(ocp_nlp_config *config, ocp_nlp_dim
     ocp_nlp_timings *timings = nlp_mem->nlp_timings;
 
     reset_stats_and_sub_timers(mem);
+
+    // if print level > 2 set print level in the qp solver to 1
+    int tmp_int;
+    if (nlp_opts->print_level > 2)
+        tmp_int = 1;
+    else
+        tmp_int = 0;
+    qp_solver->opts_set(qp_solver, nlp_opts->qp_solver_opts, "print_level", &tmp_int);
+
 #if defined(ACADOS_WITH_OPENMP)
     // backup number of threads
     int num_threads_bkp = omp_get_num_threads();
@@ -552,7 +567,7 @@ static void ocp_nlp_sqp_rti_feedback_step(ocp_nlp_config *config, ocp_nlp_dims *
     }
     timings->time_reg += acados_toc(&timer1);
 
-    if (nlp_opts->print_level > 0) {
+    if (nlp_opts->print_level > 3) {
         printf("\n------- qp_in --------\n");
         print_ocp_qp_in(nlp_mem->qp_in);
     }
@@ -583,7 +598,7 @@ static void ocp_nlp_sqp_rti_feedback_step(ocp_nlp_config *config, ocp_nlp_dims *
     qp_status = ocp_nlp_solve_qp_and_correct_dual(config, dims, nlp_opts, nlp_mem, nlp_work, precondensed_lhs, NULL, NULL, NULL, NULL, NULL);
 
     qp_info *qp_info_;
-    ocp_qp_out_get(nlp_mem->qp_out, "qp_info", &qp_info_);
+    ocp_qp_out_get(nlp_mem->qp_out, 0, "qp_info", &qp_info_);
     qp_iter = qp_info_->num_iter;
 
     // restore default warm start
@@ -597,7 +612,7 @@ static void ocp_nlp_sqp_rti_feedback_step(ocp_nlp_config *config, ocp_nlp_dims *
     {
         ocp_qp_res_compute_nrm_inf(nlp_work->qp_res, mem->stat+(mem->stat_n*1+2));
     }
-    if (nlp_opts->print_level > 0) {
+    if (nlp_opts->print_level > 3) {
         printf("\n------- qp_out --------\n");
         print_ocp_qp_out(nlp_mem->qp_out);
     }
@@ -612,7 +627,7 @@ static void ocp_nlp_sqp_rti_feedback_step(ocp_nlp_config *config, ocp_nlp_dims *
         printf("\nSQP_RTI: QP solver returned error status %d (%s) QP iteration %d.\n",
                 qp_status, status_to_string(qp_status), qp_iter);
 #endif
-        if (nlp_opts->print_level > 0)
+        if (nlp_opts->print_level > 3)
         {
             printf("\n Failed to solve the following QP:\n");
             print_ocp_qp_in(nlp_mem->qp_in);
@@ -752,7 +767,7 @@ static void level_c_prepare_residual_computation(ocp_nlp_config *config,
     {
         // nlp mem: cost_grad
         config->cost[i]->compute_gradient(config->cost[i], dims->cost[i], in->cost[i], opts->cost[i], mem->cost[i], work->cost[i]);
-        struct blasfeo_dvec *cost_grad = config->cost[i]->memory_get_grad_ptr(mem->cost[i]);
+        struct blasfeo_dvec *cost_grad = config->cost[i]->memory_get(mem->cost[i], "grad");
         blasfeo_dveccp(nv[i], cost_grad, 0, mem->cost_grad + i, 0);
 
         // nlp mem: dyn_adj
@@ -792,6 +807,14 @@ static void ocp_nlp_sqp_rti_preparation_advanced_step(ocp_nlp_config *config, oc
     ocp_nlp_out *tmp_nlp_out = nlp_work->tmp_nlp_out;
 
     reset_stats_and_sub_timers(mem);
+
+    // if print level > 2 set print level in the qp solver to 1
+    int tmp_int;
+    if (nlp_opts->print_level > 2)
+        tmp_int = 1;
+    else
+        tmp_int = 0;
+    qp_solver->opts_set(qp_solver, nlp_opts->qp_solver_opts, "print_level", &tmp_int);
 
 #if defined(ACADOS_WITH_OPENMP)
     // backup number of threads
@@ -850,12 +873,12 @@ static void ocp_nlp_sqp_rti_preparation_advanced_step(ocp_nlp_config *config, oc
         qp_status = ocp_nlp_solve_qp_and_correct_dual(config, dims, nlp_opts, nlp_mem, nlp_work, true, NULL, NULL, NULL, NULL, NULL);
 
         // save statistics
-        ocp_qp_out_get(nlp_mem->qp_out, "qp_info", &qp_info_);
+        ocp_qp_out_get(nlp_mem->qp_out, 0, "qp_info", &qp_info_);
         qp_iter = qp_info_->num_iter;
         mem->stat[mem->stat_n * nlp_mem->iter+0] = qp_status;
         mem->stat[mem->stat_n * nlp_mem->iter+1] = qp_iter;
 
-        if (nlp_opts->print_level > 0)
+        if (nlp_opts->print_level > 3)
         {
             printf("\n------- qp_in AS-RTI-A preparation --------\n");
             print_ocp_qp_in(nlp_mem->qp_in);
@@ -902,7 +925,7 @@ static void ocp_nlp_sqp_rti_preparation_advanced_step(ocp_nlp_config *config, oc
             // QP solve
             qp_status = ocp_nlp_solve_qp_and_correct_dual(config, dims, nlp_opts, nlp_mem, nlp_work, true, NULL, NULL, NULL, NULL, NULL);
 
-            ocp_qp_out_get(nlp_mem->qp_out, "qp_info", &qp_info_);
+            ocp_qp_out_get(nlp_mem->qp_out, 0, "qp_info", &qp_info_);
             qp_iter = qp_info_->num_iter;
 
             // save statistics
@@ -924,7 +947,7 @@ static void ocp_nlp_sqp_rti_preparation_advanced_step(ocp_nlp_config *config, oc
                 return;
             }
 
-            if (nlp_opts->print_level > 0) {
+            if (nlp_opts->print_level > 3) {
                 printf("\n------- qp_in B-iter %d --------\n", nlp_mem->iter);
                 print_ocp_qp_in(nlp_mem->qp_in);
                 printf("\n------- qp_out B-iter %d --------\n", nlp_mem->iter);
@@ -972,7 +995,7 @@ static void ocp_nlp_sqp_rti_preparation_advanced_step(ocp_nlp_config *config, oc
             // QP solve
             qp_status = ocp_nlp_solve_qp_and_correct_dual(config, dims, nlp_opts, nlp_mem, nlp_work, true, NULL, NULL, NULL, NULL, NULL);
 
-            ocp_qp_out_get(nlp_mem->qp_out, "qp_info", &qp_info_);
+            ocp_qp_out_get(nlp_mem->qp_out, 0, "qp_info", &qp_info_);
             qp_iter = qp_info_->num_iter;
 
             // save statistics
@@ -988,7 +1011,7 @@ static void ocp_nlp_sqp_rti_preparation_advanced_step(ocp_nlp_config *config, oc
                 return;
             }
 
-            if (nlp_opts->print_level > 0) {
+            if (nlp_opts->print_level > 3) {
                 printf("\n------- qp_in B-iter %d --------\n", nlp_mem->iter);
                 print_ocp_qp_in(nlp_mem->qp_in);
                 printf("\n------- qp_out B-iter %d --------\n", nlp_mem->iter);
@@ -1044,7 +1067,7 @@ static void ocp_nlp_sqp_rti_preparation_advanced_step(ocp_nlp_config *config, oc
             // QP solve
             qp_status = ocp_nlp_solve_qp_and_correct_dual(config, dims, nlp_opts, nlp_mem, nlp_work, false, NULL, NULL, NULL, NULL, NULL);
 
-            ocp_qp_out_get(nlp_mem->qp_out, "qp_info", &qp_info_);
+            ocp_qp_out_get(nlp_mem->qp_out, 0, "qp_info", &qp_info_);
             qp_iter = qp_info_->num_iter;
 
             // save statistics
@@ -1283,18 +1306,19 @@ void ocp_nlp_sqp_rti_eval_lagr_grad_p(void *config_, void *dims_, void *nlp_in_,
 }
 
 
-void ocp_nlp_sqp_rti_eval_solution_sens_adj_p(void *config_, void *dims_,
+void ocp_nlp_sqp_rti_eval_solution_sens_adj_p(void *config_, void *dims_, void *in_,
                         void *opts_, void *mem_, void *work_, void *sens_nlp_out,
                         const char *field, int stage, void *grad_p)
 {
     ocp_nlp_dims *dims = dims_;
+    ocp_nlp_in *in = in_;
     ocp_nlp_config *config = config_;
     ocp_nlp_sqp_rti_opts *opts = opts_;
     ocp_nlp_sqp_rti_memory *mem = mem_;
     ocp_nlp_memory *nlp_mem = mem->nlp_mem;
     ocp_nlp_sqp_rti_workspace *work = work_;
     ocp_nlp_workspace *nlp_work = work->nlp_work;
-    ocp_nlp_common_eval_solution_sens_adj_p(config, dims,
+    ocp_nlp_common_eval_solution_sens_adj_p(config, dims, in,
                         opts->nlp_opts, nlp_mem, nlp_work,
                         sens_nlp_out, field, stage, grad_p);
 }

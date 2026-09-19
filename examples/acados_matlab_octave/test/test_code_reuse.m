@@ -30,8 +30,10 @@
 import casadi.*
 
 check_acados_requirements()
-creation_modes = {'standard', 'precompiled', 'no_ocp'};
+creation_modes = {'standard', 'precompiled', 'force_precompiled', 'ocp_from_json'};
+
 for i = 1:length(creation_modes)
+    disp(['testing creation mode ', creation_modes{i}]);
     ocp_solver = create_ocp_solver_code_reuse(creation_modes{i});
     nx = length(ocp_solver.get('x', 0));
     [nu, N] = size(ocp_solver.get('u'));
@@ -42,19 +44,13 @@ for i = 1:length(creation_modes)
     u_traj_init = zeros(nu, N);
 
     %% call ocp solver
-    % set trajectory initialization
-    ocp_solver.set('init_x', x_traj_init); % states
-    ocp_solver.set('init_u', u_traj_init); % inputs
-    ocp_solver.set('init_pi', zeros(nx, N)); % multipliers for dynamics equality constraints
-
     % solve
     ocp_solver.solve();
     % get solution
-    utraj = ocp_solver.get('u');
-    xtraj = ocp_solver.get('x');
+    sol = ocp_solver.get_iterate();
 
     status = ocp_solver.get('status'); % 0 - success
-    ocp_solver.print('stat');
+    % ocp_solver.print('stat');
     stat = ocp_solver.get('stat');
     if i == 1
         stat_ref = stat;

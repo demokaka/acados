@@ -114,13 +114,11 @@ classdef AcadosOcpOptions < handle
         globalization_funnel_initial_penalty_parameter
         globalization_funnel_use_merit_fun_only
 
-
         search_direction_mode
+        byrd_omojokon_slack_relaxation_factor
         use_constraint_hessian_in_feas_qp
         allow_direction_mode_switch_to_nominal
         hpipm_mode
-        with_solution_sens_wrt_params
-        with_value_sens_wrt_params
         solution_sens_qp_t_lam_min
         as_rti_iter
         as_rti_level
@@ -139,6 +137,15 @@ classdef AcadosOcpOptions < handle
         timeout_max_time
         timeout_heuristic
 
+        custom_update_filename
+        custom_update_header_filename
+        custom_templates
+        custom_update_copy
+        with_batch_functionality
+
+        compile_interface
+
+        % the following options are deprecated, use the corresponding options in AcadosCodeGenOptions instead
         ext_fun_compile_flags
         ext_fun_expand_dyn
         ext_fun_expand_cost
@@ -147,13 +154,10 @@ classdef AcadosOcpOptions < handle
 
         model_external_shared_lib_dir
         model_external_shared_lib_name
-        custom_update_filename
-        custom_update_header_filename
-        custom_templates
-        custom_update_copy
-        with_batch_functionality
 
-        compile_interface
+        sens_forw_p            % enable forward param sensitivities
+        with_value_sens_wrt_params
+
 
     end
     methods
@@ -231,7 +235,6 @@ classdef AcadosOcpOptions < handle
             obj.globalization_full_step_dual = [];
             obj.globalization_eps_sufficient_descent = [];
 
-
             % funnel options
             obj.globalization_funnel_init_increase_factor = 15;
             obj.globalization_funnel_init_upper_bound = 1.0;
@@ -243,12 +246,11 @@ classdef AcadosOcpOptions < handle
 
             % SQP_WITH_FEASIBLE_QP options
             obj.search_direction_mode = 'NOMINAL_QP';
+            obj.byrd_omojokon_slack_relaxation_factor = 1.00001;
             obj.use_constraint_hessian_in_feas_qp = false;
             obj.allow_direction_mode_switch_to_nominal = true;
 
             obj.hpipm_mode = 'BALANCE';
-            obj.with_solution_sens_wrt_params = 0;
-            obj.with_value_sens_wrt_params = 0;
             obj.solution_sens_qp_t_lam_min = 1e-9;
             obj.as_rti_iter = 1;
             obj.as_rti_level = 4;
@@ -266,20 +268,6 @@ classdef AcadosOcpOptions < handle
             obj.timeout_max_time = 0.;
             obj.timeout_heuristic = 'ZERO';
 
-            % check whether flags are provided by environment variable
-            env_var = getenv("ACADOS_EXT_FUN_COMPILE_FLAGS");
-            if isempty(env_var)
-                obj.ext_fun_compile_flags = '-O2';
-            else
-                obj.ext_fun_compile_flags = env_var;
-            end
-            obj.ext_fun_expand_dyn = false;
-            obj.ext_fun_expand_cost = false;
-            obj.ext_fun_expand_constr = false;
-            obj.ext_fun_expand_precompute = false;
-
-            obj.model_external_shared_lib_dir = [];
-            obj.model_external_shared_lib_name = [];
             obj.custom_update_filename = '';
             obj.custom_update_header_filename = '';
             obj.custom_templates = [];
@@ -287,9 +275,27 @@ classdef AcadosOcpOptions < handle
             obj.with_batch_functionality = false;
 
             obj.compile_interface = []; % corresponds to automatic detection, possible values: true, false, []
+
+            env_var = getenv("ACADOS_EXT_FUN_COMPILE_FLAGS");
+            if isempty(env_var)
+                obj.ext_fun_compile_flags = '-O2';
+            else
+                obj.ext_fun_compile_flags = env_var;
+            end
+            obj.ext_fun_expand_constr = false;
+            obj.ext_fun_expand_cost = false;
+            obj.ext_fun_expand_precompute = false;
+            obj.ext_fun_expand_dyn = false;
+
+            obj.model_external_shared_lib_dir = [];
+            obj.model_external_shared_lib_name = [];
+
+            obj.with_value_sens_wrt_params = false;
+            obj.sens_forw_p = false;
+
         end
 
-        function s = struct(self)
+        function s = to_struct(self)
             if exist('properties')
                 publicProperties = eval('properties(self)');
             else
@@ -301,9 +307,26 @@ classdef AcadosOcpOptions < handle
             end
         end
 
-        function s = convert_to_struct_for_json_dump(self, N)
-            s = self.struct();
+        function s = convert_to_struct_for_json_dump(self)
+            s = self.to_struct();
             s = prepare_struct_for_json_dump(s, {'time_steps', 'shooting_nodes', 'cost_scaling', 'sim_method_num_stages', 'sim_method_num_steps', 'sim_method_jac_reuse', 'custom_templates'}, {});
+        end
+    end
+    methods (Static)
+        function obj = from_struct(s)
+            % Create AcadosOcpOptions from a struct (e.g. decoded from JSON).
+            obj = AcadosOcpOptions();
+            fields = fieldnames(s);
+            for i = 1:length(fields)
+                f = fields{i};
+                % direct assignment for simple fields
+                try
+                    obj.(f) = s.(f);
+                catch
+                    % ignore unknown fields
+                    warning(['Could not assign field ' f ' in AcadosOcpOptions.from_struct']);
+                end
+            end
         end
     end
 end

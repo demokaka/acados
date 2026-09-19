@@ -38,57 +38,105 @@ classdef AcadosOcp < handle
         model
         parameter_values % initial value of the parameter
         p_global_values % initial value of the parameter
-        acados_include_path
-        acados_lib_path
         problem_class
         simulink_opts
-        cython_include_dirs
-        code_export_directory
-        json_file
-        shared_lib_ext
         name
         zoro_description
         external_function_files_ocp
         external_function_files_model
+
+        code_gen_options
+        % moved to code_gen_options, kept for backward compatibility, remove in future
+        code_export_directory
+        json_file
     end
+
+
+    properties (Dependent)
+        code_gen_opts % deprecated, remove at some point
+    end
+
+
     methods
+        function value = get.code_gen_opts(obj)
+            warning('code_gen_opts is deprecated; use code_gen_options instead.');
+            value = obj.code_gen_options;
+        end
+
+        function obj = set.code_gen_opts(obj, value)
+            warning('code_gen_opts is deprecated; use code_gen_options instead.');
+            obj.code_gen_options = value;
+        end
+
         function obj = AcadosOcp()
             obj.dims = AcadosOcpDims();
             obj.cost = AcadosOcpCost();
             obj.constraints = AcadosOcpConstraints();
             obj.solver_options = AcadosOcpOptions();
             obj.model = AcadosModel();
+            obj.code_gen_options = AcadosCodeGenOptions();
 
             obj.parameter_values = [];
             obj.p_global_values = [];
+            obj.zoro_description = [];
+
             obj.problem_class = 'OCP';
             obj.simulink_opts = [];
-            obj.cython_include_dirs = [];
-            obj.json_file = 'acados_ocp_nlp.json';
-            obj.shared_lib_ext = '.so';
-            obj.name = 'ocp';
-            if ismac()
-                obj.shared_lib_ext = '.dylib';
-            end
-            obj.code_export_directory = 'c_generated_code';
+            obj.name = [];
 
-            % set include and lib path
-            acados_folder = getenv('ACADOS_INSTALL_DIR');
-            obj.acados_include_path = [acados_folder, '/include'];
-            obj.acados_lib_path = [acados_folder, '/lib'];
-            obj.zoro_description = [];
+            obj.json_file = '';
+            obj.code_export_directory = '';
         end
 
-        function s = struct(self)
+        function obj = set.simulink_opts(obj, value)
+            if isempty(value)
+                obj.simulink_opts = [];
+            elseif isa(value, 'AcadosOcpSimulinkOptions')
+                obj.simulink_opts = value;
+            elseif isstruct(value)
+                obj.simulink_opts = AcadosOcpSimulinkOptions.from_struct(value);
+            else
+                error('simulink_opts must be empty, a struct, or an AcadosOcpSimulinkOptions object.');
+            end
+        end
+
+        function s = to_struct(self)
             if exist('properties')
                 publicProperties = eval('properties(self)');
             else
                 publicProperties = fieldnames(self);
             end
+            % TODO remove once code_gen_opts is removed
+            publicProperties = setdiff(publicProperties, {'code_gen_opts'}, 'stable');
+            %
             s = struct();
             for fi = 1:numel(publicProperties)
                 s.(publicProperties{fi}) = self.(publicProperties{fi});
             end
+
+            % TODO remove once top-level json_file is deprecated fully.
+            if isfield(s, 'json_file')
+                s = rmfield(s, 'json_file');
+            end
+            s = orderfields(s);
+
+            % prepare struct for json dump
+            s.parameter_values = reshape(num2cell(self.parameter_values), [1, self.dims.np]);
+            s.p_global_values = reshape(num2cell(self.p_global_values), [1, self.dims.np_global]);
+            s.model = s.model.to_struct();
+            s.dims = orderfields(s.dims.to_struct());
+            s.code_gen_options = orderfields(s.code_gen_options.to_struct());
+            s.cost = orderfields(s.cost.convert_to_struct_for_json_dump());
+            s.constraints = orderfields(s.constraints.convert_to_struct_for_json_dump());
+            s.solver_options = orderfields(s.solver_options.convert_to_struct_for_json_dump());
+            if ~isempty(self.simulink_opts)
+                s.simulink_opts = orderfields(self.simulink_opts.to_struct());
+            end
+
+            if ~isempty(self.zoro_description)
+                s.zoro_description = orderfields(self.zoro_description.convert_to_struct_for_json_dump());
+            end
+            s = orderfields(s);
         end
 
         function make_consistent_cost_initial(self, initial_node_relevant)
@@ -100,11 +148,12 @@ classdef AcadosOcp < handle
             end
             if strcmp(cost.cost_type_0, 'LINEAR_LS')
                 if ~isempty(cost.W_0) && ~isempty(cost.Vx_0) && ~isempty(cost.Vu_0)
+                    verify_weighting_matrix(cost.W_0, 'W_0');
                     ny = length(cost.W_0);
 
                     if isempty(cost.yref_0)
                         if initial_node_relevant
-                            warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                            warning(['yref_0 not provided.' 10 'Using zeros(ny_0,1) by default.']);
                         end
                         self.cost.yref_0 = zeros(ny,1);
                     end
@@ -117,10 +166,11 @@ classdef AcadosOcp < handle
                 dims.ny_0 = ny;
             elseif strcmp(cost.cost_type_0, 'NONLINEAR_LS')
                 if ~isempty(cost.W_0) && ~isempty(model.cost_y_expr_0)
+                    verify_weighting_matrix(cost.W_0, 'W_0');
                     ny = length(cost.W_0);
                     if isempty(cost.yref_0)
                         if initial_node_relevant
-                            warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                            warning(['yref_0 not provided.' 10 'Using zeros(ny_0,1) by default.']);
                         end
                         self.cost.yref_0 = zeros(ny,1);
                     end
@@ -157,7 +207,7 @@ classdef AcadosOcp < handle
                 end
                 if isempty(cost.yref_0)
                     if initial_node_relevant
-                        warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                        warning(['yref_0 not provided.' 10 'Using zeros(ny_0,1) by default.']);
                     end
                     self.cost.yref_0 = zeros(ny,1);
                 end
@@ -183,10 +233,11 @@ classdef AcadosOcp < handle
             end
             if strcmp(cost.cost_type, 'LINEAR_LS')
                 if ~isempty(cost.W) && ~isempty(cost.Vx) && ~isempty(cost.Vu)
+                    verify_weighting_matrix(cost.W, 'W');
                     ny = length(cost.W);
                     if isempty(cost.yref)
                         if path_nodes_relevant
-                            warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                            warning(['yref not provided.' 10 'Using zeros(ny,1) by default.']);
                         end
                         self.cost.yref = zeros(ny,1);
                     end
@@ -199,10 +250,11 @@ classdef AcadosOcp < handle
                 dims.ny = ny;
             elseif strcmp(cost.cost_type, 'NONLINEAR_LS')
                 if ~isempty(cost.W) && ~isempty(model.cost_y_expr)
+                    verify_weighting_matrix(cost.W, 'W');
                     ny = length(cost.W);
                     if isempty(cost.yref)
                         if path_nodes_relevant
-                            warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                            warning(['yref not provided.' 10 'Using zeros(ny,1) by default.']);
                         end
                         self.cost.yref = zeros(ny,1);
                     end
@@ -230,7 +282,7 @@ classdef AcadosOcp < handle
                 end
                 if isempty(cost.yref)
                     if path_nodes_relevant
-                        warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                        warning(['yref not provided.' 10 'Using zeros(ny,1) by default.']);
                     end
                     self.cost.yref = zeros(ny,1);
                 end
@@ -253,10 +305,11 @@ classdef AcadosOcp < handle
 
             if strcmp(cost.cost_type_e, 'LINEAR_LS')
                 if ~isempty(cost.W_e) && ~isempty(cost.Vx_e)
+                    verify_weighting_matrix(cost.W_e, 'W_e');
                     ny_e = length(cost.W_e);
                     if isempty(cost.yref_e)
                         if terminal_node_relevant
-                            warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                            warning(['yref_e not provided.' 10 'Using zeros(ny_e,1) by default.']);
                         end
                         self.cost.yref_e = zeros(ny_e,1);
                     end
@@ -274,10 +327,11 @@ classdef AcadosOcp < handle
                 dims.ny_e = ny_e;
             elseif strcmp(cost.cost_type_e, 'NONLINEAR_LS')
                 if ~isempty(cost.W_e) && ~isempty(model.cost_y_expr_e)
+                    verify_weighting_matrix(cost.W_e, 'W_e');
                     ny_e = length(cost.W_e);
                     if isempty(cost.yref_e)
                         if terminal_node_relevant
-                            warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                            warning(['yref_e not provided.' 10 'Using zeros(ny_e,1) by default.']);
                         end
                         self.cost.yref_e = zeros(ny_e,1);
                     end
@@ -305,7 +359,7 @@ classdef AcadosOcp < handle
                 end
                 if isempty(cost.yref_e)
                     if terminal_node_relevant
-                        warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                        warning(['yref_e not provided.' 10 'Using zeros(ny_e,1) by default.']);
                     end
                     self.cost.yref_e = zeros(ny_e,1);
                 end
@@ -931,8 +985,16 @@ classdef AcadosOcp < handle
             if length(opts.tf) ~= 1 || opts.tf < 0
                 error('time horizon tf should be a nonnegative number');
             end
-
-            if ~isempty(opts.shooting_nodes)
+            if ~isempty(opts.time_steps)
+                if opts.N_horizon ~= length(opts.time_steps)
+                    error('inconsistent dimension N regarding time steps.');
+                end
+                sum_time_steps = sum(opts.time_steps);
+                if abs((sum_time_steps - opts.tf) / opts.tf) > 1e-14
+                    error(['time steps are not consistent with time horizon tf, ', ...
+                        'got tf = ' num2str(opts.tf) '; sum(time_steps) = ' num2str(sum_time_steps) '.']);
+                end
+            elseif ~isempty(opts.shooting_nodes)
                 if opts.N_horizon + 1 ~= length(opts.shooting_nodes)
                     error('inconsistent dimension N regarding shooting nodes.');
                 end
@@ -943,15 +1005,6 @@ classdef AcadosOcp < handle
                 if abs((sum_time_steps - opts.tf) / opts.tf) > 1e-14
                     warning('shooting nodes are not consistent with time horizon tf, rescaling automatically');
                     opts.time_steps = opts.time_steps * opts.tf / sum_time_steps;
-                end
-            elseif ~isempty(opts.time_steps)
-                if opts.N_horizon ~= length(opts.time_steps)
-                    error('inconsistent dimension N regarding time steps.');
-                end
-                sum_time_steps = sum(opts.time_steps);
-                if abs((sum_time_steps - opts.tf) / opts.tf) > 1e-14
-                    error(['time steps are not consistent with time horizon tf, ', ...
-                        'got tf = ' num2str(opts.tf) '; sum(time_steps) = ' num2str(sum_time_steps) '.']);
                 end
             else
                 opts.time_steps = opts.tf/opts.N_horizon * ones(opts.N_horizon,1);
@@ -978,16 +1031,20 @@ classdef AcadosOcp < handle
             % set integrator time automatically
             opts.Tsim = opts.time_steps(1);
 
+            if self.code_gen_options.sens_forw_p && ~any(strcmp(opts.integrator_type, {'ERK', 'IRK'}))
+                error('Option sens_forw_p=true is currently only supported for integrator_type = ERK and IRK.');
+            end
+
             % integrator: num_stages
             if ~isempty(opts.sim_method_num_stages)
-                if(strcmp(opts.integrator_type, "ERK"))
+                if (strcmp(opts.integrator_type, "ERK"))
                     if (any(opts.sim_method_num_stages < 1) || any(opts.sim_method_num_stages > 4))
                         error(['ERK: num_stages = ', num2str(opts.sim_method_num_stages) ' not available. Only number of stages = {1,2,3,4} implemented!']);
                     end
                 end
             end
 
-            %% options sanity checks
+            % options sanity checks
             if length(opts.sim_method_num_steps) == 1
                 opts.sim_method_num_steps = opts.sim_method_num_steps * ones(1, opts.N_horizon);
             elseif length(opts.sim_method_num_steps) ~= opts.N_horizon
@@ -1004,6 +1061,17 @@ classdef AcadosOcp < handle
                 error('sim_method_jac_reuse must be a scalar or a vector of length N');
             end
 
+            % check dynamics expression for the specified integrator type
+            switch opts.integrator_type
+                case 'ERK'
+                    assert(~isempty(self.model.f_expl_expr), 'For the ERK integrator, AcadosModel.f_expl_expr should be provided.')
+                case {'IRK', 'LIFTED_IRK', 'GNSF'}
+                    assert(~isempty(self.model.f_impl_expr), ['For the ', opts.integrator_type, ' integrator, AcadosModel.f_impl_expr should be provided.'])
+                case 'DISCRETE'
+                    assert(~isempty(self.model.disc_dyn_expr), 'For the DISCRETE integrator, AcadosModel.disc_dyn_expr should be provided.')
+                otherwise
+                    error('Integrator type not recognized.')
+            end
 
         end
 
@@ -1014,6 +1082,7 @@ classdef AcadosOcp < handle
             end
             self.model.make_consistent(self.dims);
 
+            % problem formulation
             model = self.model;
             dims = self.dims;
             cost = self.cost;
@@ -1044,7 +1113,7 @@ classdef AcadosOcp < handle
 
             % detect GNSF structure
             if strcmp(opts.integrator_type, 'GNSF') && opts.N_horizon > 0
-                if dims.gnsf_nx1 + dims.gnsf_nx2 ~= dims.nx
+                if model.gnsf_model.dims.nx1 + model.gnsf_model.dims.nx2 ~= dims.nx
                     % TODO: properly interface those.
                     gnsf_transcription_opts = struct();
                     detect_gnsf_structure(model, dims, gnsf_transcription_opts);
@@ -1123,8 +1192,6 @@ classdef AcadosOcp < handle
                     error('SQP_RTI only supports FIXED_QP_TOL nlp_qp_tol_strategy.');
                 end
             end
-            % OCP name
-            self.name = model.name;
 
             % parameters
             if isempty(self.parameter_values)
@@ -1161,7 +1228,7 @@ classdef AcadosOcp < handle
                     path_nodes_relevant = 1;
                 else
                     path_nodes_relevant = 0;
-                end                
+                end
             else
                 % MOCP
                 if mocp_info.phase_idx == 0
@@ -1181,10 +1248,33 @@ classdef AcadosOcp < handle
                 end
             end
 
-            
             self.make_consistent_cost_initial(initial_node_relevant);
             self.make_consistent_cost_path(path_nodes_relevant);
             self.make_consistent_cost_terminal(terminal_node_relevant);
+
+            % GN check
+            gn_warning_0 = (opts.N_horizon > 0 && strcmp(cost.cost_type_0, 'EXTERNAL') && strcmp(opts.hessian_approx, 'GAUSS_NEWTON') && opts.ext_cost_num_hess == 0 && isempty(model.cost_expr_ext_cost_custom_hess_0));
+            gn_warning_path = (opts.N_horizon > 0 && strcmp(cost.cost_type, 'EXTERNAL') && strcmp(opts.hessian_approx, 'GAUSS_NEWTON') && opts.ext_cost_num_hess == 0 && isempty(model.cost_expr_ext_cost_custom_hess));
+            gn_warning_terminal = (strcmp(cost.cost_type_e, 'EXTERNAL') && strcmp(opts.hessian_approx, 'GAUSS_NEWTON') && opts.ext_cost_num_hess == 0 && isempty(model.cost_expr_ext_cost_custom_hess_e));
+            if any([gn_warning_0, gn_warning_path, gn_warning_terminal])
+                external_cost_types = {};
+                if gn_warning_0
+                    external_cost_types{end+1} = 'cost_type_0';
+                end
+                if gn_warning_path
+                    external_cost_types{end+1} = 'cost_type';
+                end
+                if gn_warning_terminal
+                    external_cost_types{end+1} = 'cost_type_e';
+                end
+                fprintf(['\nWARNING: Gauss-Newton Hessian approximation with EXTERNAL cost type not well defined!\n' ...
+                    'got cost_type EXTERNAL for %s, hessian_approx: ''GAUSS_NEWTON''.\n' ...
+                    'With this setting, acados will proceed computing the exact Hessian for the cost term and no Hessian contribution from constraints and dynamics.\n' ...
+                    'If the external cost is a linear least squares cost, this coincides with the Gauss-Newton Hessian.\n' ...
+                    'Note: There is also the option to use the external cost module with a numerical Hessian approximation (see `ext_cost_num_hess`).\n' ...
+                    'OR the option to provide a symbolic custom Hessian approximation (see `cost_expr_ext_cost_custom_hess`).\n\n'], ...
+                    strjoin(external_cost_types, ', '));
+            end
 
             % cost integration
             if strcmp(opts.cost_discretization, "INTEGRATOR") && opts.N_horizon > 0
@@ -1483,7 +1573,7 @@ classdef AcadosOcp < handle
                 if opts.N_horizon == 0
                     error('ZORO only supported for N_horizon > 0.');
                 end
-                self.zoro_description.make_consistent(self.dims);
+                self.zoro_description.make_consistent(self.dims, self.code_gen_options);
             end
 
             % Anderson acceleration
@@ -1510,6 +1600,70 @@ classdef AcadosOcp < handle
                     error([field ' can not depend on u or z.'])
                 end
             end
+            % Simulink
+            if ~isempty(self.simulink_opts)
+                self.simulink_opts.make_consistent(self.solver_options, 'OCP');
+            end
+
+            % code generation options
+            % migrate deprecated top-level fields into code_gen_options (backward compatibility)
+            deprecated_fields = {'json_file', 'code_export_directory'};
+
+            for i = 1:length(deprecated_fields)
+                fld = deprecated_fields{i};
+
+                old_val = self.(fld);
+                new_val = self.code_gen_options.(fld);
+
+                if ~isempty(old_val)
+                    warning(['AcadosOcp.', fld, ' is deprecated, please use AcadosOcp.code_gen_options.', fld, '.']);
+                    if ~isempty(new_val)
+                        warning(['Both AcadosOcp.', fld, ' and AcadosOcp.code_gen_options.', fld, ' are set, using AcadosOcp.code_gen_options.', fld, '.']);
+                    else
+                        self.code_gen_options.(fld) = old_val;
+                    end
+                end
+            end
+
+            if isempty(self.name)
+                self.name = strcat('ocp_', self.model.name, '_', self.get_id());
+            end
+
+            if length(self.name) - 25 > namelengthmax
+                error('The OCP name %s exceeds the maximum namelength. Choose a shorter name.', self.name)
+            end
+
+            code_gen_options_defaults = AcadosCodeGenOptions();
+            deprecated_fields_solver_opts = {...
+                'ext_fun_compile_flags', ...
+                'ext_fun_expand_dyn', ...
+                'ext_fun_expand_cost', ...
+                'ext_fun_expand_constr', ...
+                'ext_fun_expand_precompute', ...
+                'model_external_shared_lib_dir', ...
+                'model_external_shared_lib_name', ...
+                'with_value_sens_wrt_params', ...
+                'sens_forw_p'};
+
+            for i = 1:length(deprecated_fields_solver_opts)
+                fld = deprecated_fields_solver_opts{i};
+
+                old_val = self.solver_options.(fld);
+                new_val = self.code_gen_options.(fld);
+                default_val = code_gen_options_defaults.(fld);
+
+                if ~(isempty(old_val) && isempty(default_val))
+                    non_default_old_val = ~isequal(old_val, default_val);
+                    non_default_new_val = ~isequal(new_val, default_val);
+                    if non_default_old_val && non_default_new_val
+                        warning(['Both AcadosOcpOptions.', fld, ' and AcadosOcp.code_gen_options.', fld, ' are set, using AcadosOcp.code_gen_options.', fld, '.']);
+                    elseif non_default_old_val
+                        self.code_gen_options.(fld) = old_val;
+                    end
+                end
+            end
+            self.code_gen_options.generate_hess = strcmp(self.solver_options.hessian_approx, 'EXACT');
+            self.code_gen_options.make_consistent(self.name);
         end
 
         function [] = detect_cost_and_constraints(self, mocp_info)
@@ -1564,27 +1718,40 @@ classdef AcadosOcp < handle
             end
         end
 
+        function id = get_id(self)
+            % Returns a hash of the OCP object to be used as a unique identifier.
+
+            fields_used_for_hash = { ...
+                'dims', ...
+                'cost', ...
+                'constraints', ...
+                'model', ...
+                'solver_options', ...
+                'zoro_description', ...
+                'simulink_opts' ...
+            };
+
+            hashes = struct();
+
+            for i = 1:numel(fields_used_for_hash)
+                field = fields_used_for_hash{i};
+                val = self.(field);
+                if ~ isempty(val)
+                    hashes.(field) = hash_struct(val.to_struct());
+                end
+            end
+
+            hash = hash_struct(hashes);
+
+            id = hash(1:8);
+        end
+
         function context = generate_external_functions(ocp, context)
 
             %% generate C code for CasADi functions / copy external functions
-            solver_opts = ocp.solver_options;
-
             if nargin < 2
-                % options for code generation
-                code_gen_opts = struct();
-                code_gen_opts.generate_hess = strcmp(solver_opts.hessian_approx, 'EXACT');
-                code_gen_opts.with_solution_sens_wrt_params = solver_opts.with_solution_sens_wrt_params;
-                code_gen_opts.with_value_sens_wrt_params = solver_opts.with_value_sens_wrt_params;
-                code_gen_opts.code_export_directory = ocp.code_export_directory;
-
-                code_gen_opts.ext_fun_expand_dyn = solver_opts.ext_fun_expand_dyn;
-                code_gen_opts.ext_fun_expand_cost = solver_opts.ext_fun_expand_cost;
-                code_gen_opts.ext_fun_expand_constr = solver_opts.ext_fun_expand_constr;
-                code_gen_opts.ext_fun_expand_precompute = solver_opts.ext_fun_expand_precompute;
-
-                context = GenerateContext(ocp.model.p_global, ocp.name, code_gen_opts);
-            else
-                code_gen_opts = context.opts;
+                % options for CasADi code generation
+                context = GenerateContext(ocp.model.p_global, ocp.name, ocp.code_gen_options);
             end
             context = setup_code_generation_context(ocp, context, false, false);
             context.finalize();
@@ -1594,15 +1761,14 @@ classdef AcadosOcp < handle
         end
 
         function context = setup_code_generation_context(ocp, context, ignore_initial, ignore_terminal)
-            code_gen_opts = context.opts;
-            solver_opts = ocp.solver_options;
+            code_gen_options = context.opts;
             constraints = ocp.constraints;
             cost = ocp.cost;
             dims = ocp.dims;
 
             setup_code_generation_context_dynamics(ocp, context);
 
-            if solver_opts.N_horizon == 0
+            if ocp.solver_options.N_horizon == 0
                 stage_type_indices = [3];
             else
                 if ignore_initial && ignore_terminal
@@ -1621,7 +1787,7 @@ classdef AcadosOcp < handle
             % cost
             cost_types = {cost.cost_type_0, cost.cost_type, cost.cost_type_e};
             cost_ext_fun_types = {cost.cost_ext_fun_type_0, cost.cost_ext_fun_type, cost.cost_ext_fun_type_e};
-            cost_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_cost']);
+            cost_dir = fullfile(code_gen_options.code_export_directory, [ocp.model.name '_cost']);
 
             for n = 1:length(stage_type_indices)
 
@@ -1655,7 +1821,7 @@ classdef AcadosOcp < handle
             % constraints
             constraints_types = {constraints.constr_type_0, constraints.constr_type, constraints.constr_type_e};
             constraints_dims = {dims.nh_0, dims.nh, dims.nh_e};
-            constraints_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_constraints']);
+            constraints_dir = fullfile(code_gen_options.code_export_directory, [ocp.model.name '_constraints']);
 
             for n = 1:length(stage_type_indices)
                 i = stage_type_indices(n);
@@ -1666,13 +1832,13 @@ classdef AcadosOcp < handle
         end
 
         function setup_code_generation_context_dynamics(ocp, context)
-            code_gen_opts = context.opts;
+            code_gen_options = context.opts;
             solver_opts = ocp.solver_options;
             if solver_opts.N_horizon == 0
                 return
             end
 
-            model_dir = fullfile(pwd, code_gen_opts.code_export_directory, [ocp.name '_model']);
+            model_dir = fullfile(code_gen_options.code_export_directory, [ocp.model.name '_model']);
 
             if strcmp(ocp.model.dyn_ext_fun_type, 'generic')
                 check_dir_and_create(model_dir);
@@ -1705,9 +1871,9 @@ classdef AcadosOcp < handle
         function render_templates(self)
 
             %% render templates
-            json_fullfile = fullfile(pwd, self.json_file);
+            json_fullfile = self.code_gen_options.json_file;
             main_dir = pwd;
-            chdir(self.code_export_directory);
+            chdir(self.code_gen_options.code_export_directory);
 
             template_list = self.get_template_list();
             for i = 1:length(template_list)
@@ -1778,13 +1944,16 @@ classdef AcadosOcp < handle
 
             if ~isempty(self.solver_options.custom_update_filename)
                 template_list{end+1} = {fullfile(matlab_template_path, 'acados_mex_custom_update.in.c'), ['acados_mex_custom_update_', self.name, '.c']};
+                if ~isempty(self.zoro_description)
+                    template_list{end+1} = {fullfile(matlab_template_path, 'acados_mex_get_zoRO_Pk.in.c'), ['acados_mex_get_zoRO_Pk_', self.name, '.c']};
+                end
             end
 
             % append headers
             template_list = [template_list, self.get_external_function_header_templates()];
 
             if self.dims.n_global_data > 0
-                template_list{end+1} = {'p_global_precompute_fun.in.h',  [self.model.name, '_p_global_precompute_fun.h']};
+                template_list{end+1} = {'p_global_precompute_fun.in.h',  [self.name, '_p_global_precompute_fun.h']};
             end
 
             % Simulink
@@ -1794,12 +1963,6 @@ classdef AcadosOcp < handle
                 if ~strcmp(self.solver_options.integrator_type, 'DISCRETE')
                     template_list{end+1} = {fullfile(matlab_template_path, 'acados_sim_solver_sfun.in.c'), ['acados_sim_solver_sfunction_', self.name, '.c']};
                     template_list{end+1} = {fullfile(matlab_template_path, 'make_sfun_sim.in.m'), ['make_sfun_sim.m']};
-                end
-                if self.simulink_opts.inputs.rti_phase && ~strcmp(self.solver_options.nlp_solver_type, 'SQP_RTI')
-                    error('rti_phase is only supported for SQP_RTI');
-                end
-                if self.simulink_opts.outputs.KKT_residuals && strcmp(self.solver_options.nlp_solver_type, 'SQP_RTI')
-                    warning('KKT_residuals now computes the residuals of the output iterate in SQP_RTI, this leads to increased computation time, turn off this port if it is not needed. See https://github.com/acados/acados/pull/1346.');
                 end
             else
                 disp("Not rendering Simulink-related templates, as simulink_opts are not specified.")
@@ -1815,35 +1978,13 @@ classdef AcadosOcp < handle
 
         function dump_to_json(self, json_file)
             if nargin < 2
-                json_file = self.json_file;
+                json_file = self.code_gen_options.json_file;
             end
 
-            out_struct = orderfields(self.struct());
+            out_struct = self.to_struct();
 
-            % add compilation information to json
-            acados_folder = getenv('ACADOS_INSTALL_DIR');
-            libs = loadjson(fileread(fullfile(acados_folder, 'lib', 'link_libs.json')));
-            out_struct.acados_link_libs = orderfields(libs);
-            if ismac
-                out_struct.os = 'mac';
-            elseif isunix
-                out_struct.os = 'unix';
-            else
-                out_struct.os = 'pc';
-            end
-
-            % prepare struct for json dump
-            out_struct.parameter_values = reshape(num2cell(self.parameter_values), [1, self.dims.np]);
-            out_struct.p_global_values = reshape(num2cell(self.p_global_values), [1, self.dims.np_global]);
-            out_struct.model = orderfields(self.model.convert_to_struct_for_json_dump());
-            out_struct.dims = orderfields(out_struct.dims.struct());
-            out_struct.cost = orderfields(out_struct.cost.convert_to_struct_for_json_dump());
-            out_struct.constraints = orderfields(out_struct.constraints.convert_to_struct_for_json_dump());
-            out_struct.solver_options = orderfields(out_struct.solver_options.convert_to_struct_for_json_dump(self.solver_options.N_horizon));
-
-            if ~isempty(self.zoro_description)
-                out_struct.zoro_description = orderfields(self.zoro_description.convert_to_struct_for_json_dump());
-            end
+            % add hash
+            out_struct.hash = hash_struct(out_struct);
 
             % actual json dump
             json_string = savejson('', out_struct, 'ForceRootName', 0);
@@ -1852,6 +1993,92 @@ classdef AcadosOcp < handle
             fwrite(fid, json_string, 'char');
             fclose(fid);
         end
+    end
+
+    methods (Static)
+        function obj = from_struct(s)
+            % Create AcadosOcp from a struct (e.g. decoded from JSON).
+            obj = AcadosOcp();
+
+            if ~isstruct(s)
+                error('from_struct input must be a struct.');
+            end
+
+            fields = fieldnames(s);
+            for fi = 1:numel(fields)
+                f = fields{fi};
+                if ismember(f, {'simulink_opts', 'zoro_description'})
+                    % fields that can be empty or of a specific class.
+                    if isempty(s.(f))
+                        obj.(f) = [];
+                    elseif ismember(f, {'simulink_opts'})
+                        obj.(f) = AcadosOcpSimulinkOptions.from_struct(s.(f));
+                    elseif ismember(f, {'zoro_description'})
+                        obj.(f) = ZoroDescription.from_struct(s.(f));
+                    end
+                elseif ismember(f, {'constraints', 'cost', 'solver_options', 'model', 'dims', 'code_gen_options', 'code_gen_opts'})
+                    % Handle nested acados objects by trying to call their own from_struct
+                    field_struct = s.(f);
+                    if isempty(field_struct)
+                        error('Failed to load OCP from struct. Field %s is not provided.', f);
+                    end
+                    % target object / class
+                    target_obj = obj.(f);
+                    target_class = class(target_obj);
+                    % prefer a static from_struct constructor if available
+                    % disp('Loading nested object of class from struct...');
+                    % disp(target_class)
+                    fh = str2func([target_class '.from_struct']);
+                    obj.(f) = fh(field_struct);
+                elseif ismember(f, {'ros_opts'})
+                    if ~isempty(s.(f))
+                        warning('Cannot load ros_opts in MATLAB, only supported in Python.')
+                    end
+                elseif strcmp(f, 'hash')
+                    % skip hash field
+                    if ischar(s.hash)
+                        hash_str = s.hash;
+                    else
+                        hash_str = num2str(s.hash);
+                    end
+                    % disp(['Skipping hash field in AcadosOcp.from_struct, got ', hash_str]);
+                    continue
+                elseif strcmp(f, 'p_global_values')
+                    % column vector
+                    obj.(f) = s.(f)(:);
+                else
+                    % direct assignment for simple fields
+                    try
+                        obj.(f) = s.(f);
+                    catch
+                        % ignore unknown fields
+                        warning(['Could not assign field ' f ' in AcadosOcp.from_struct']);
+                    end
+                end
+            end
+        end
+
+        function obj = from_json(json_file)
+            % Create AcadosOcp from a json file.
+
+            % jsonlab
+            acados_folder = getenv('ACADOS_INSTALL_DIR');
+            addpath(fullfile(acados_folder, 'external', 'jsonlab'))
+
+            if ~exist(json_file, 'file')
+                error('json file "%s" not found.', json_file);
+            end
+
+            % decode json (expects loadjson available in repo)
+            data = loadjson(fileread(json_file), 'SimplifyCell', 0);
+
+            % set absolute-ish json_file path for consistency
+            % json_full = which(json_file);
+            % data.json_file = json_full;
+
+            obj = AcadosOcp.from_struct(data);
+        end
+
     end % methods
 end
 

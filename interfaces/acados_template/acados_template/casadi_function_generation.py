@@ -29,28 +29,19 @@
 #
 
 from typing import Union, List, Optional
-from dataclasses import dataclass
 
 import os, warnings
 import casadi as ca
+
+from .acados_code_gen_options import AcadosCodeGenOptions
 from .utils import is_empty, casadi_length, check_casadi_version_supports_p_global, print_casadi_expression, set_directory, is_casadi_SX
 from .acados_model import AcadosModel
 from .acados_ocp_constraints import AcadosOcpConstraints
+from .gnsf import GnsfModel, idx_perm_to_ipiv
 
-
-@dataclass
-class AcadosCodegenOptions:
-    ext_fun_expand_constr: bool = False
-    ext_fun_expand_cost: bool = False
-    ext_fun_expand_dyn: bool = False
-    ext_fun_expand_precompute: bool = False
-    code_export_directory: str = "c_generated_code"
-    with_solution_sens_wrt_params: bool = False
-    with_value_sens_wrt_params: bool = False
-    generate_hess: bool = True
 
 class GenerateContext:
-    def __init__(self, p_global: Optional[Union[ca.SX, ca.MX]], problem_name: str, opts: AcadosCodegenOptions):
+    def __init__(self, p_global: Optional[Union[ca.SX, ca.MX]], problem_name: str, opts: AcadosCodeGenOptions):
         self.p_global = p_global
         if not is_empty(p_global):
             check_casadi_version_supports_p_global()
@@ -58,14 +49,6 @@ class GenerateContext:
         self.problem_name = problem_name
 
         self.opts = opts
-        self.casadi_codegen_opts = dict(mex=False, casadi_int='int', casadi_real='double')
-
-        try:
-            ca.CodeGenerator("foo", {"force_canonical": True})
-            self.casadi_codegen_opts["force_canonical"] = False
-        except:
-            # force_canonical not supported in CasADi version
-            pass
 
         self.list_funname_dir_pairs = []  # list of (function_name, output_dir)
 
@@ -114,7 +97,7 @@ class GenerateContext:
 
             with set_directory(output_dir):
                 try:
-                    fun.generate(name, self.casadi_codegen_opts)
+                    fun.generate(name, self.opts.casadi_code_gen_options)
                 except RuntimeError as e:
                     print(f"Error while generating function {name} in directory {output_dir}")
                     print(e)
@@ -187,7 +170,7 @@ class GenerateContext:
             fun_name = f'{self.problem_name}_p_global_precompute_fun'
             self.add_function_definition(fun_name, [self.p_global], [self.global_data_expr], output_dir, 'precompute')
         else:
-            print("WARNING: No CasADi function depends on p_global.")
+            warnings.warn("No CasADi function depends on p_global.")
 
         # self.print_global_data_summary()
 
@@ -230,45 +213,61 @@ def generate_c_code_discrete_dynamics(context: GenerateContext, model: AcadosMod
     x = model.x
     u = model.u
     p = model.p
+    pi = model.pi
     p_global = model.p_global
     phi = model.disc_dyn_expr
-    model_name = model.name
 
-    symbol = model.get_casadi_symbol()
-    nx1 = casadi_length(phi)
-
-    lam = symbol('lam', nx1, 1)
     ux = ca.vertcat(u, x)
 
     # generate jacobians
-    jac_ux = ca.jacobian(phi, ux)
+    if is_empty(model.disc_dyn_custom_jac_ux_expr):
+        jac_ux = ca.jacobian(phi, ux)
+    else:
+        jac_ux = model.disc_dyn_custom_jac_ux_expr
+
     # generate adjoint
-    adj_ux = ca.jtimes(phi, ux, lam, True)
-    # generate hessian
-    hess_ux = ca.jacobian(adj_ux, ux, {"symmetric": is_casadi_SX(x)})
+    adj_ux = ca.jtimes(phi, ux, pi, True)
 
     # set up & generate ca.Functions
-    fun_name = model_name + '_dyn_disc_phi_fun'
+    fun_name = model.name + '_dyn_disc_phi_fun'
     context.add_function_definition(fun_name, [x, u, p], [phi], model_dir, 'dyn')
 
-    fun_name = model_name + '_dyn_disc_phi_fun_jac'
+    fun_name = model.name + '_dyn_disc_phi_fun_jac'
     context.add_function_definition(fun_name, [x, u, p], [phi, jac_ux.T], model_dir, 'dyn')
 
-    fun_name = model_name + '_dyn_disc_phi_fun_jac_hess'
-    context.add_function_definition(fun_name, [x, u, lam, p], [phi, jac_ux.T, hess_ux], model_dir, 'dyn')
+    # generate hessian
+    if opts.generate_hess:
+        if is_empty(model.disc_dyn_custom_hess_ux_expr):
+            hess_ux = ca.jacobian(adj_ux, ux, {"symmetric": is_casadi_SX(x)})
+        else:
+            hess_ux = model.disc_dyn_custom_hess_ux_expr
+        # lower triangular is sufficient
+        hess_ux = ca.tril(hess_ux)
+        fun_name = model.name + '_dyn_disc_phi_fun_jac_hess'
+        context.add_function_definition(fun_name, [x, u, pi, p], [phi, jac_ux.T, hess_ux], model_dir, 'dyn')
 
-    if opts.with_solution_sens_wrt_params:
+    if opts.with_solution_sens_wrt_params_forw:
         # generate jacobian of lagrange gradient wrt p
         jac_p = ca.jacobian(phi, p_global)
-        # hess_xu_p_old = ca.jacobian((lam.T @ jac_ux).T, p)
+        # hess_xu_p_old = ca.jacobian((pi.T @ jac_ux).T, p)
         hess_xu_p = ca.jacobian(adj_ux, p_global) # using adjoint
-        fun_name = model_name + '_dyn_disc_phi_jac_p_hess_xu_p'
-        context.add_function_definition(fun_name, [x, u, lam, p], [jac_p, hess_xu_p], model_dir, 'dyn')
+        fun_name = model.name + '_dyn_disc_phi_jac_p_hess_xu_p'
+        context.add_function_definition(fun_name, [x, u, pi, p], [jac_p, hess_xu_p], model_dir, 'dyn')
+
+    if opts.with_solution_sens_wrt_params_adj:
+        fun_name = model.name + '_dyn_disc_phi_hess_ux_pdiff_adj_pdiff'
+        symbol = model.get_casadi_symbol()
+        sens_seed_ux = symbol('sens_seed_ux', casadi_length(ux), 1)
+        sens_seed_pi = symbol('sens_seed_pi', casadi_length(phi), 1)
+        hess_ux_pdiff = ca.jtimes(adj_ux, p_global, sens_seed_ux, True)
+        adj_pdiff = ca.jtimes(phi, p_global, sens_seed_pi, True)
+        adj_lag_grad_pdiff = hess_ux_pdiff + adj_pdiff
+        context.add_function_definition(fun_name, [x, u, pi, sens_seed_ux, sens_seed_pi, p], [adj_lag_grad_pdiff], model_dir, 'dyn')
 
     if opts.with_value_sens_wrt_params:
-        adj_p = ca.jtimes(phi, p_global, lam, True)
-        fun_name = model_name + '_dyn_disc_phi_adj_p'
-        context.add_function_definition(fun_name, [x, u, lam, p], [adj_p], model_dir, 'dyn')
+        adj_p = ca.jtimes(phi, p_global, pi, True)
+        fun_name = model.name + '_dyn_disc_phi_adj_p'
+        context.add_function_definition(fun_name, [x, u, pi, p], [adj_p], model_dir, 'dyn')
 
     return
 
@@ -276,49 +275,55 @@ def generate_c_code_discrete_dynamics(context: GenerateContext, model: AcadosMod
 
 def generate_c_code_explicit_ode(context: GenerateContext, model: AcadosModel, model_dir: str):
     generate_hess = context.opts.generate_hess
+    sens_forw_p = context.opts.sens_forw_p
 
     # load model
     x = model.x
     u = model.u
     p = model.p
     f_expl = model.f_expl_expr
-    model_name = model.name
 
     nx = x.size()[0]
     nu = u.size()[0]
+    np = casadi_length(p)
 
     symbol = model.get_casadi_symbol()
 
     # set up expressions
     Sx = symbol('Sx', nx, nx)
-    Sp = symbol('Sp', nx, nu)
+    Su = symbol('Su', nx, nu)
     lambdaX = symbol('lambdaX', nx, 1)
 
     vdeX = ca.jtimes(f_expl, x, Sx)
-    vdeP = ca.jacobian(f_expl, u) + ca.jtimes(f_expl, x, Sp)
+    vdeU = ca.jacobian(f_expl, u) + ca.jtimes(f_expl, x, Su)
     adj = ca.jtimes(f_expl, ca.vertcat(x, u), lambdaX, True)
 
     if generate_hess:
-        S_forw = ca.vertcat(ca.horzcat(Sx, Sp), ca.horzcat(ca.DM.zeros(nu,nx), ca.DM.eye(nu)))
-        hess = ca.mtimes(ca.transpose(S_forw),ca.jtimes(adj, ca.vertcat(x,u), S_forw))
-        hess2 = []
-        for j in range(nx+nu):
-            for i in range(j,nx+nu):
-                hess2 = ca.vertcat(hess2, hess[i,j])
+        S_forw = ca.vertcat(ca.horzcat(Sx, Su), ca.horzcat(ca.DM.zeros(nu,nx), ca.DM.eye(nu)))
+        hess = ca.mtimes(ca.transpose(S_forw), ca.jtimes(adj, ca.vertcat(x,u), S_forw))
+        # vectorized lower triangular Hessian
+        hess_vec = hess[hess.sparsity().makeDense()[0].get_lower()]
 
     # add to context
-    fun_name = model_name + '_expl_ode_fun'
+    fun_name = model.name + '_expl_ode_fun'
     context.add_function_definition(fun_name, [x, u, p], [f_expl], model_dir, 'dyn')
 
-    fun_name = model_name + '_expl_vde_forw'
-    context.add_function_definition(fun_name, [x, Sx, Sp, u, p], [f_expl, vdeX, vdeP], model_dir, 'dyn')
+    fun_name = model.name + '_expl_vde_forw'
+    context.add_function_definition(fun_name, [x, Sx, Su, u, p], [f_expl, vdeX, vdeU], model_dir, 'dyn')
 
-    fun_name = model_name + '_expl_vde_adj'
+    fun_name = model.name + '_expl_vde_adj'
     context.add_function_definition(fun_name, [x, lambdaX, u, p], [adj], model_dir, 'dyn')
 
     if generate_hess:
-        fun_name = model_name + '_expl_ode_hess'
-        context.add_function_definition(fun_name, [x, Sx, Sp, lambdaX, u, p], [adj, hess2], model_dir, 'dyn')
+        fun_name = model.name + '_expl_ode_hess'
+        context.add_function_definition(fun_name, [x, Sx, Su, lambdaX, u, p], [adj, hess_vec], model_dir, 'dyn')
+
+    # param-direction forward VDE
+    if sens_forw_p:
+        Sp = symbol('Sp', nx, np)
+        vdeP = ca.jacobian(f_expl, p) + ca.jtimes(f_expl, x, Sp)   # f_p + A*Sp
+        fun_name = model.name + '_expl_vde_forw_p'
+        context.add_function_definition(fun_name, [x, Sp, u, p], [vdeP], model_dir, 'dyn')
 
     return
 
@@ -333,7 +338,6 @@ def generate_c_code_implicit_ode(context: GenerateContext, model: AcadosModel, m
     p = model.p
     t = model.t
     f_impl = model.f_impl_expr
-    model_name = model.name
 
     # get model dimensions
     nx = casadi_length(x)
@@ -344,21 +348,23 @@ def generate_c_code_implicit_ode(context: GenerateContext, model: AcadosModel, m
     jac_xdot = ca.jacobian(f_impl, xdot)
     jac_u = ca.jacobian(f_impl, u)
     jac_z = ca.jacobian(f_impl, z)
+    if context.opts.sens_forw_p:
+        jac_p = ca.jacobian(f_impl, p)
 
     # Set up functions
-    fun_name = model_name + '_impl_dae_fun'
+    fun_name = model.name + '_impl_dae_fun'
     context.add_function_definition(fun_name, [x, xdot, u, z, t, p], [f_impl], model_dir, 'dyn')
 
-    fun_name = model_name + '_impl_dae_fun_jac_x_xdot_z'
+    fun_name = model.name + '_impl_dae_fun_jac_x_xdot_z'
     context.add_function_definition(fun_name, [x, xdot, u, z, t, p], [f_impl, jac_x, jac_xdot, jac_z], model_dir, 'dyn')
 
-    fun_name = model_name + '_impl_dae_fun_jac_x_xdot_u_z'
+    fun_name = model.name + '_impl_dae_fun_jac_x_xdot_u_z'
     context.add_function_definition(fun_name, [x, xdot, u, z, t, p], [f_impl, jac_x, jac_xdot, jac_u, jac_z], model_dir, 'dyn')
 
-    fun_name = model_name + '_impl_dae_fun_jac_x_xdot_u'
+    fun_name = model.name + '_impl_dae_fun_jac_x_xdot_u'
     context.add_function_definition(fun_name, [x, xdot, u, z, t, p], [f_impl, jac_x, jac_xdot, jac_u], model_dir, 'dyn')
 
-    fun_name = model_name + '_impl_dae_jac_x_xdot_u_z'
+    fun_name = model.name + '_impl_dae_jac_x_xdot_u_z'
     context.add_function_definition(fun_name, [x, xdot, u, z, t, p], [jac_x, jac_xdot, jac_u, jac_z], model_dir, 'dyn')
 
     if context.opts.generate_hess:
@@ -367,25 +373,28 @@ def generate_c_code_implicit_ode(context: GenerateContext, model: AcadosModel, m
         multiplier = symbol('multiplier', nx + nz)
         ADJ = ca.jtimes(f_impl, x_xdot_z_u, multiplier, True)
         HESS = ca.jacobian(ADJ, x_xdot_z_u, {"symmetric": is_casadi_SX(x)})
-        fun_name = model_name + '_impl_dae_hess'
+        fun_name = model.name + '_impl_dae_hess'
         context.add_function_definition(fun_name, [x, xdot, u, z, multiplier, t, p], [HESS], model_dir, 'dyn')
+
+    if context.opts.sens_forw_p:
+        fun_name = model.name + '_impl_dae_jac_p'
+        context.add_function_definition(fun_name, [x, xdot, u, z, t, p], [jac_p], model_dir, 'dyn')
 
     return
 
 
 def generate_c_code_gnsf(context: GenerateContext, model: AcadosModel, model_dir: str):
-    model_name = model.name
+
+    gnsf: GnsfModel = model.gnsf_model
+
+    y = gnsf.y
+    uhat = gnsf.uhat
+    x1 = gnsf.x1
+    x1dot = gnsf.x1dot
+    z1 = gnsf.z1
+    p = model.p
 
     # obtain gnsf dimensions
-    get_matrices_fun = model.get_matrices_fun
-    phi_fun = model.phi_fun
-
-    size_gnsf_A = get_matrices_fun.size_out(0)
-    gnsf_nx1 = size_gnsf_A[1]
-    gnsf_nz1 = size_gnsf_A[0] - size_gnsf_A[1]
-    gnsf_nuhat = max(phi_fun.size_in(1))
-    gnsf_ny = max(phi_fun.size_in(0))
-
     # set up expressions
     # if the model uses ca.MX because of cost/constraints
     # the DAE can be exported as ca.SX -> detect GNSF in MATLAB
@@ -393,46 +402,72 @@ def generate_c_code_gnsf(context: GenerateContext, model: AcadosModel, model_dir
     u = model.u
     symbol = model.get_casadi_symbol()
 
-    y = symbol("y", gnsf_ny, 1)
-    uhat = symbol("uhat", gnsf_nuhat, 1)
-    p = model.p
-    x1 = symbol("gnsf_x1", gnsf_nx1, 1)
-    x1dot = symbol("gnsf_x1dot", gnsf_nx1, 1)
-    z1 = symbol("gnsf_z1", gnsf_nz1, 1)
+    # y = symbol("y", gnsf.dims.ny, 1)
+    # uhat = symbol("uhat", gnsf.dims.nuhat, 1)
+    # p = model.p
+    # x1 = symbol("gnsf_x1", gnsf.dims.nx1, 1)
+    # x1dot = symbol("gnsf_x1dot", gnsf.dims.nx1, 1)
+    # z1 = symbol("gnsf_z1", gnsf.dims.nz1, 1)
     dummy = symbol("gnsf_dummy", 1, 1)
     empty_var = symbol("gnsf_empty_var", 0, 1)
 
+    jac_phi_y = ca.jacobian(gnsf.phi, gnsf.y)
+    jac_phi_uhat = ca.jacobian(gnsf.phi, gnsf.uhat)
+
     ## generate C code
-    fun_name = model_name + '_gnsf_phi_fun'
-    context.add_function_definition(fun_name, [y, uhat, p], [phi_fun(y, uhat, p)], model_dir, 'dyn')
+    fun_name = model.name + '_gnsf_phi_fun'
+    context.add_function_definition(fun_name, [y, uhat, p], [gnsf.phi], model_dir, 'dyn')
 
-    fun_name = model_name + '_gnsf_phi_fun_jac_y'
-    phi_fun_jac_y = model.phi_fun_jac_y
-    context.add_function_definition(fun_name, [y, uhat, p], phi_fun_jac_y(y, uhat, p), model_dir, 'dyn')
+    fun_name = model.name + '_gnsf_phi_fun_jac_y'
+    context.add_function_definition(fun_name, [y, uhat, p], [gnsf.phi, jac_phi_y], model_dir, 'dyn')
 
-    fun_name = model_name + '_gnsf_phi_jac_y_uhat'
-    phi_jac_y_uhat = model.phi_jac_y_uhat
-    context.add_function_definition(fun_name, [y, uhat, p], phi_jac_y_uhat(y, uhat, p), model_dir, 'dyn')
+    fun_name = model.name + '_gnsf_phi_jac_y_uhat'
+    context.add_function_definition(fun_name, [y, uhat, p], [jac_phi_y, jac_phi_uhat], model_dir, 'dyn')
 
-    fun_name = model_name + '_gnsf_f_lo_fun_jac_x1k1uz'
-    f_lo_fun_jac_x1k1uz = model.f_lo_fun_jac_x1k1uz
-    f_lo_fun_jac_x1k1uz_eval = f_lo_fun_jac_x1k1uz(x1, x1dot, z1, u, p)
+    fun_name = model.name + '_gnsf_f_lo_fun_jac_x1k1uz'
+    f_lo = gnsf.f_LO
 
-    # avoid codegeneration issue
-    if not isinstance(f_lo_fun_jac_x1k1uz_eval, tuple) and is_empty(f_lo_fun_jac_x1k1uz_eval):
-        f_lo_fun_jac_x1k1uz_eval = [empty_var]
+    f_lo_fun_jac_x1k1uz_out = [
+            f_lo,
+            ca.horzcat(
+                ca.jacobian(f_lo, x1),
+                ca.jacobian(f_lo, x1dot),
+                ca.jacobian(f_lo, u),
+                ca.jacobian(f_lo, z1),
+            ),
+        ]
+    context.add_function_definition(fun_name, [x1, x1dot, z1, u, p], f_lo_fun_jac_x1k1uz_out, model_dir, 'dyn')
 
-    context.add_function_definition(fun_name, [x1, x1dot, z1, u, p], f_lo_fun_jac_x1k1uz_eval, model_dir, 'dyn')
+    ipiv_x = idx_perm_to_ipiv(gnsf.idx_perm_x)
+    ipiv_z = idx_perm_to_ipiv(gnsf.idx_perm_z)
 
-    fun_name = model_name + '_gnsf_get_matrices_fun'
-    context.add_function_definition(fun_name, [dummy], get_matrices_fun(1), model_dir, 'dyn')
+    fun_name = model.name + '_gnsf_get_matrices_fun'
+    context.add_function_definition(fun_name, [dummy], [
+            gnsf.A,
+            gnsf.B,
+            gnsf.C,
+            gnsf.E,
+            gnsf.L_x,
+            gnsf.L_xdot,
+            gnsf.L_z,
+            gnsf.L_u,
+            gnsf.A_LO,
+            gnsf.c,
+            gnsf.E_LO,
+            gnsf.B_LO,
+            gnsf.nontrivial_f_LO,
+            gnsf.purely_linear,
+            ipiv_x,
+            ipiv_z,
+            gnsf.c_LO,
+        ], model_dir, 'dyn')
 
     # remove fields for json dump
-    del model.phi_fun
-    del model.phi_fun_jac_y
-    del model.phi_jac_y_uhat
-    del model.f_lo_fun_jac_x1k1uz
-    del model.get_matrices_fun
+    for _attr in ["phi_fun", "phi_fun_jac_y", "phi_jac_y_uhat", "f_lo_fun_jac_x1k1uz"]:
+        try:
+            delattr(model, _attr)
+        except Exception:
+            pass
 
     return
 
@@ -456,7 +491,8 @@ def generate_c_code_external_cost(context: GenerateContext, model: AcadosModel, 
         suffix_name = "_cost_ext_cost_e_fun"
         suffix_name_hess = "_cost_ext_cost_e_fun_jac_hess"
         suffix_name_jac = "_cost_ext_cost_e_fun_jac"
-        suffix_name_param_sens = "_cost_ext_cost_e_hess_xu_p"
+        suffix_name_param_sens_forw = "_cost_ext_cost_e_hess_xu_p"
+        suffix_name_param_sens_adj = "_cost_ext_cost_e_adj_ux_pdiff"
         suffix_name_value_sens = "_cost_ext_cost_e_grad_p"
         ext_cost = model.cost_expr_ext_cost_e
         custom_hess = model.cost_expr_ext_cost_custom_hess_e
@@ -469,7 +505,8 @@ def generate_c_code_external_cost(context: GenerateContext, model: AcadosModel, 
         suffix_name = "_cost_ext_cost_fun"
         suffix_name_hess = "_cost_ext_cost_fun_jac_hess"
         suffix_name_jac = "_cost_ext_cost_fun_jac"
-        suffix_name_param_sens = "_cost_ext_cost_hess_xu_p"
+        suffix_name_param_sens_forw = "_cost_ext_cost_hess_xu_p"
+        suffix_name_param_sens_adj = "_cost_ext_cost_adj_ux_pdiff"
         suffix_name_value_sens = "_cost_ext_cost_grad_p"
         ext_cost = model.cost_expr_ext_cost
         custom_hess = model.cost_expr_ext_cost_custom_hess
@@ -478,7 +515,8 @@ def generate_c_code_external_cost(context: GenerateContext, model: AcadosModel, 
         suffix_name = "_cost_ext_cost_0_fun"
         suffix_name_hess = "_cost_ext_cost_0_fun_jac_hess"
         suffix_name_jac = "_cost_ext_cost_0_fun_jac"
-        suffix_name_param_sens = "_cost_ext_cost_0_hess_xu_p"
+        suffix_name_param_sens_forw = "_cost_ext_cost_0_hess_xu_p"
+        suffix_name_param_sens_adj = "_cost_ext_cost_0_adj_ux_pdiff"
         suffix_name_value_sens = "_cost_ext_cost_0_grad_p"
         ext_cost = model.cost_expr_ext_cost_0
         custom_hess = model.cost_expr_ext_cost_custom_hess_0
@@ -489,7 +527,8 @@ def generate_c_code_external_cost(context: GenerateContext, model: AcadosModel, 
     fun_name = model.name + suffix_name
     fun_name_hess = model.name + suffix_name_hess
     fun_name_jac = model.name + suffix_name_jac
-    fun_name_param = model.name + suffix_name_param_sens
+    fun_name_param = model.name + suffix_name_param_sens_forw
+    fun_name_param_adj = model.name + suffix_name_param_sens_adj
     fun_name_value_sens = model.name + suffix_name_value_sens
 
     # generate expression for full gradient and Hessian
@@ -502,18 +541,29 @@ def generate_c_code_external_cost(context: GenerateContext, model: AcadosModel, 
     if not is_empty(custom_hess):
         hess_ux = custom_hess
 
+    # lower triangular is sufficient
+    hess_ux = ca.tril(hess_ux)
+
     cost_dir = os.path.abspath(os.path.join(opts.code_export_directory, f'{model.name}_cost'))
 
     context.add_function_definition(fun_name, [x, u, z, p], [ext_cost], cost_dir, 'cost')
     context.add_function_definition(fun_name_hess, [x, u, z, p], [ext_cost, grad_uxz, hess_ux, hess_z, hess_z_ux], cost_dir, 'cost')
     context.add_function_definition(fun_name_jac, [x, u, z, p], [ext_cost, grad_uxz], cost_dir, 'cost')
 
-    if opts.with_solution_sens_wrt_params:
+    if opts.with_solution_sens_wrt_params_forw:
         if casadi_length(z) > 0:
             raise NotImplementedError("acados: solution sensitivities wrt parameters not supported with algebraic variables.")
         grad_ux = ca.jacobian(ext_cost, ca.vertcat(u, x))
         hess_xu_p = ca.jacobian(grad_ux, p_global)
         context.add_function_definition(fun_name_param, [x, u, z, p], [hess_xu_p], cost_dir, 'cost')
+
+    if opts.with_solution_sens_wrt_params_adj:
+        if casadi_length(z) > 0:
+            raise NotImplementedError("acados: solution sensitivities wrt parameters not supported with algebraic variables.")
+        seed_ux = symbol('seed_ux', nunx, 1)
+        adj_ux = ca.jtimes(ext_cost, ca.vertcat(u, x), seed_ux)
+        adj_ux_p = ca.jacobian(adj_ux, p_global).T
+        context.add_function_definition(fun_name_param_adj, [x, u, z, seed_ux, p], [adj_ux_p], cost_dir, 'cost')
 
     if opts.with_value_sens_wrt_params:
         grad_p = ca.jacobian(ext_cost, p_global).T
@@ -563,7 +613,8 @@ def generate_c_code_nls_cost(context: GenerateContext, model: AcadosModel, stage
         y_hess = 0
     else:
         y_adj = ca.jtimes(y_expr, ca.vertcat(u, x), y, True)
-        y_hess = ca.jacobian(y_adj, ca.vertcat(u, x), {"symmetric": is_casadi_SX(x)})
+        if opts.generate_hess:
+            y_hess = ca.jacobian(y_adj, ca.vertcat(u, x), {"symmetric": is_casadi_SX(x)})
 
     ## generate C code
     suffix_name = '_fun'
@@ -574,9 +625,10 @@ def generate_c_code_nls_cost(context: GenerateContext, model: AcadosModel, stage
     fun_name = model.name + middle_name + suffix_name
     context.add_function_definition(fun_name, [x, u, z, t, p], [ y_expr, cost_jac_expr, dy_dz ], cost_dir, 'cost')
 
-    suffix_name = '_hess'
-    fun_name = model.name + middle_name + suffix_name
-    context.add_function_definition(fun_name, [x, u, z, y, t, p], [ y_hess ], cost_dir, 'cost')
+    if opts.generate_hess:
+        suffix_name = '_hess'
+        fun_name = model.name + middle_name + suffix_name
+        context.add_function_definition(fun_name, [x, u, z, y, t, p], [ y_hess ], cost_dir, 'cost')
 
     return
 
@@ -650,6 +702,8 @@ def generate_c_code_conl_cost(context: GenerateContext, model: AcadosModel, stag
     outer_hess_fun = ca.Function('outer_hess', [res_expr, t, p, p_global], [hess])
     outer_hess_expr = outer_hess_fun(inner_expr, t, p, p_global)
     outer_hess_is_diag = outer_hess_expr.sparsity().is_diag()
+    # lower triangular is sufficient
+    outer_hess_expr = ca.tril(outer_hess_expr)
 
     # if residual dimension <= 4, do not exploit diagonal structure
     if casadi_length(res_expr) <= 4:
@@ -687,6 +741,7 @@ def generate_c_code_constraint(context: GenerateContext, model: AcadosModel, con
     p = model.p
     u = model.u
     z = model.z
+    p_global = model.p_global
 
     symbol = model.get_casadi_symbol()
 
@@ -748,6 +803,8 @@ def generate_c_code_constraint(context: GenerateContext, model: AcadosModel, con
             adj_ux = ca.jtimes(con_h_expr, ca.vertcat(u, x), lam_h, True)
             # hessian
             hess_ux = ca.jacobian(adj_ux, ca.vertcat(u, x), {"symmetric": is_casadi_SX(x)})
+            # lower triangular is sufficient
+            hess_ux = ca.tril(hess_ux)
 
             adj_z = ca.jtimes(con_h_expr, z, lam_h, True)
             hess_z = ca.jacobian(adj_z, z, {"symmetric": is_casadi_SX(x)})
@@ -763,10 +820,10 @@ def generate_c_code_constraint(context: GenerateContext, model: AcadosModel, con
             fun_name = model.name + '_constr_h_fun'
         context.add_function_definition(fun_name, [x, u, z, p], [con_h_expr], constraints_dir, 'constr')
 
-        if opts.with_solution_sens_wrt_params:
-            jac_p = ca.jacobian(con_h_expr, model.p_global)
+        if opts.with_solution_sens_wrt_params_forw:
+            jac_p = ca.jacobian(con_h_expr, p_global)
             adj_ux = ca.jtimes(con_h_expr, ca.vertcat(u, x), lam_h, True)
-            hess_xu_p = ca.jacobian(adj_ux, model.p_global)
+            hess_xu_p = ca.jacobian(adj_ux, p_global)
 
             if stage_type == 'terminal':
                 fun_name = model.name + '_constr_h_e_jac_p_hess_xu_p'
@@ -778,8 +835,26 @@ def generate_c_code_constraint(context: GenerateContext, model: AcadosModel, con
             context.add_function_definition(fun_name, [x, u, lam_h, z, p], \
                     [jac_p, hess_xu_p], constraints_dir, 'constr')
 
+        if opts.with_solution_sens_wrt_params_adj:
+            if stage_type == 'terminal':
+                fun_name = model.name + '_constr_h_e_hess_ux_pdiff_adj_pdiff'
+            elif stage_type == 'initial':
+                fun_name = model.name + '_constr_h_0_hess_ux_pdiff_adj_pdiff'
+            else:
+                fun_name = model.name + '_constr_h_hess_ux_pdiff_adj_pdiff'
+
+            adj_ux = ca.jtimes(con_h_expr, ca.vertcat(u, x), lam_h, True)
+
+            symbol = model.get_casadi_symbol()
+            sens_seed_ux = symbol('sens_seed_ux', casadi_length(u) + casadi_length(x), 1)
+            sens_seed_lam_h = symbol('sens_seed_lam_h', nh, 1)
+            hess_ux_pdiff = ca.jtimes(adj_ux, p_global, sens_seed_ux, True)
+            adj_pdiff = ca.jtimes(con_h_expr, p_global, sens_seed_lam_h, True)
+            adj_lag_grad_pdiff = hess_ux_pdiff + adj_pdiff
+            context.add_function_definition(fun_name, [x, u, lam_h, sens_seed_ux, sens_seed_lam_h, p], [adj_lag_grad_pdiff], constraints_dir, 'constr')
+
         if opts.with_value_sens_wrt_params:
-            adj_p = ca.jtimes(con_h_expr, model.p_global, lam_h, True)
+            adj_p = ca.jtimes(con_h_expr, p_global, lam_h, True)
             if stage_type == 'terminal':
                 fun_name = model.name + '_constr_h_e_adj_p'
             elif stage_type == 'initial':
@@ -809,6 +884,7 @@ def generate_c_code_constraint(context: GenerateContext, model: AcadosModel, con
         phi_jac_x = ca.jacobian(con_phi_expr_x_u_z, x)
         phi_jac_z = ca.jacobian(con_phi_expr_x_u_z, z)
 
+        # the implementation in the acados core needs the full Hessian!
         hess = ca.vertcat(*[ca.hessian(con_phi_expr[i], r)[0] for i in range(nphi)])
         hess = ca.substitute(hess, r, con_r_expr)
 

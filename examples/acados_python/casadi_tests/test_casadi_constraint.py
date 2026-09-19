@@ -86,22 +86,23 @@ def main():
     ## solve using acados
     # create acados solver
     ocp_solver = AcadosOcpSolver(ocp,verbose=False)
-    ocp_solver.load_iterate_from_obj(initial_iterate)
+    ocp_solver.set_iterate(initial_iterate)
     # solve with acados
     status = ocp_solver.solve()
     if status != 0:
         raise Exception(f'acados returned status {status}.')
     # get solution
-    result = ocp_solver.store_iterate_to_obj()
+    result = ocp_solver.get_iterate()
 
     # ## solve using casadi
     casadi_ocp_solver = AcadosCasadiOcpSolver(ocp=ocp,solver="ipopt",verbose=False)
-    casadi_ocp_solver.load_iterate_from_obj(result)
+    casadi_ocp_solver.set_iterate(result)
     casadi_ocp_solver.solve()
-    result_casadi = casadi_ocp_solver.store_iterate_to_obj()
+    result_casadi = casadi_ocp_solver.get_iterate()
 
     # evaluate difference
-    result.flatten().allclose(other=result_casadi.flatten())
+    if not result.flatten().allclose(other=result_casadi.flatten()):
+        raise Exception("Casadi solver result does not match acados solver result.")
 
     if PLOT:
         Fmax = 80

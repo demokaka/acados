@@ -48,6 +48,7 @@ classdef AcadosSimOptions < handle
         ext_fun_expand_dyn
         compile_interface
         with_batch_functionality
+        sens_forw_p
     end
 
     methods
@@ -65,6 +66,10 @@ classdef AcadosSimOptions < handle
             obj.sens_hess = false;
             obj.output_z = true;
             obj.jac_reuse = 0;
+            obj.compile_interface = []; % corresponds to automatic detection, possible values: true, false, []
+            obj.with_batch_functionality = false;
+
+            % TODO the options below are deprecated and will be removed
             % check whether flags are provided by environment variable
             env_var = getenv("ACADOS_EXT_FUN_COMPILE_FLAGS");
             if isempty(env_var)
@@ -73,11 +78,10 @@ classdef AcadosSimOptions < handle
                 obj.ext_fun_compile_flags = env_var;
             end
             obj.ext_fun_expand_dyn = false;
-            obj.with_batch_functionality = false;
-            obj.compile_interface = []; % corresponds to automatic detection, possible values: true, false, []
+            obj.sens_forw_p = false;     % default: disabled
         end
 
-        function s = struct(self)
+        function s = to_struct(self)
             if exist('properties')
                 publicProperties = eval('properties(self)');
             else

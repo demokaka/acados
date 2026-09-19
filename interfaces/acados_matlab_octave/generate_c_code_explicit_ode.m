@@ -40,6 +40,7 @@ function generate_c_code_explicit_ode(context, model, model_dir)
     p = model.p;
     nx = length(x);
     nu = length(u);
+    np = length(p);
 
     % check type
     if isa(x(1), 'casadi.SX')
@@ -61,16 +62,28 @@ function generate_c_code_explicit_ode(context, model, model_dir)
         lambdaX = SX.sym('lambdaX', nx, 1);
         vdeX = SX.zeros(nx, nx);
         vdeU = SX.zeros(nx, nu) + jacobian(f_expl, u);
+        if context.opts.sens_forw_p
+            Sp   = SX.sym('Sp', nx, np);
+            vdeP = SX.zeros(nx, np) + jacobian(f_expl, p);  % f_p
+        end
     else
         Sx = MX.sym('Sx', nx, nx);
         Su = MX.sym('Su', nx, nu);
         lambdaX = MX.sym('lambdaX', nx, 1);
         vdeX = MX.zeros(nx, nx);
         vdeU = MX.zeros(nx, nu) + jacobian(f_expl, u);
+        if context.opts.sens_forw_p
+            Sp   = MX.sym('Sp', nx, np);
+            vdeP = MX.zeros(nx, np) + jacobian(f_expl, p);  % f_p
+        end
     end
 
     vdeX = vdeX + jtimes(f_expl, x, Sx);
     vdeU = vdeU + jtimes(f_expl, x, Su);
+
+    if context.opts.sens_forw_p
+        vdeP = vdeP + jtimes(f_expl, x, Sp);   % A*Sp + f_p
+    end
 
     % 'true' at the end tells to transpose the jacobian before multiplication => reverse mode
     adj = jtimes(f_expl, [x;u], lambdaX, true);
@@ -78,13 +91,14 @@ function generate_c_code_explicit_ode(context, model, model_dir)
     if context.opts.generate_hess
         S_forw = vertcat(horzcat(Sx, Su), horzcat(zeros(nu,nx), eye(nu)));
         hess = S_forw.'*jtimes(adj, [x;u], S_forw);
-        % TODO uncompress it ?????
-        hess2 = [];
-        for j = 1:nx+nu
-            for i = j:nx+nu
-                hess2 = [hess2; hess(i,j)];
-            end
-        end
+        % vectorized lower triangular Hessian
+        hess_vec = hess(hess.sparsity().makeDense().get_lower()+1)
+        % hess_vec = [];
+        % for j = 1:nx+nu
+        %     for i = j:nx+nu
+        %         hess_vec = [hess_vec; hess(i,j)];
+        %     end
+        % end
     end
 
     fun_name = [model.name,'_expl_ode_fun'];
@@ -98,7 +112,12 @@ function generate_c_code_explicit_ode(context, model, model_dir)
 
     if context.opts.generate_hess
         fun_name = [model.name,'_expl_ode_hess'];
-        context.add_function_definition(fun_name, {x, Sx, Su, lambdaX, u, p}, {adj, hess2}, model_dir, 'dyn');
+        context.add_function_definition(fun_name, {x, Sx, Su, lambdaX, u, p}, {adj, hess_vec}, model_dir, 'dyn');
     end
 
+    % param-direction forward VDE
+    if context.opts.sens_forw_p
+        fun_name = [model.name,'_expl_vde_forw_p'];
+        context.add_function_definition(fun_name, {x, Sp, u, p}, {vdeP}, model_dir, 'dyn');
+    end
 end

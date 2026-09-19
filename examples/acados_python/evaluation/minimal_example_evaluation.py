@@ -138,8 +138,7 @@ def setup(x0, N_horizon, Tf, td, RTI=False, parametric_constraints=False):
 
     ocp.solver_options.qp_solver_cond_N = N_horizon
 
-    solver_json = 'acados_ocp_' + model.name + '.json'
-    acados_ocp_solver = AcadosOcpSolver(ocp, json_file=solver_json, save_p_global=True)
+    acados_ocp_solver = AcadosOcpSolver(ocp, save_p_global=True)
 
     # create an integrator with the same settings as used in the OCP solver.
     # attention, with p_global, integrator cannot be built from OCP
@@ -190,8 +189,8 @@ def main(use_RTI: bool = False, parametric_constraints: bool = True, plot_result
         RTI=use_RTI,
         parametric_constraints=parametric_constraints)
 
-    nx = ocp_solver.acados_ocp.dims.nx
-    nu = ocp_solver.acados_ocp.dims.nu
+    nx = ocp_solver.ocp.dims.nx
+    nu = ocp_solver.ocp.dims.nu
 
     Nsim = 100
     simX = np.zeros((Nsim + 1, nx))
@@ -213,7 +212,7 @@ def main(use_RTI: bool = False, parametric_constraints: bool = True, plot_result
         # change constraint parameter in the middle of the simulation
         if i == constraint_par['iter_omega_change'] and parametric_constraints:
             new_omega_dot_min = np.array([constraint_par['omega_dot_min_2']])
-            for j in range(ocp_solver.acados_ocp.dims.N):
+            for j in range(ocp_solver.ocp.dims.N):
                 ocp_solver.set(j, "p", new_omega_dot_min)
             ocp_solver.set_p_global_and_precompute_dependencies(np.array([constraint_par['omega_dot_max_2']]))
             evaluator.update_all(ocp_solver)
@@ -238,7 +237,7 @@ def main(use_RTI: bool = False, parametric_constraints: bool = True, plot_result
             simU[i, :] = ocp_solver.solve_for_x0(x0_bar=simX[i, :])
 
         # evaluate the cost of the full trajectory
-        solution_obj = ocp_solver.store_iterate_to_obj()
+        solution_obj = ocp_solver.get_iterate()
         cost_ext_eval = evaluator.evaluate_ocp_cost(solution_obj)
         cost_int_eval = ocp_solver.get_cost()
         abs_error = np.abs(cost_ext_eval - cost_int_eval)
@@ -255,7 +254,7 @@ def main(use_RTI: bool = False, parametric_constraints: bool = True, plot_result
     # plot results
     if not plot_results:
         return
-    model = ocp_solver.acados_ocp.model
+    model = ocp_solver.ocp.model
 
     fix, axes = plot_pendulum_eval(
         np.linspace(0, td * Nsim, Nsim + 1),

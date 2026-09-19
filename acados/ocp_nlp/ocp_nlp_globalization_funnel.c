@@ -246,7 +246,7 @@ void update_funnel_penalty_parameter(ocp_nlp_globalization_funnel_memory *mem,
     print_debug_output("-- Objective Multiplier Update: \n", nlp_opts->print_level, 1);
     print_debug_output_double("left hand side: ", mem->penalty_parameter * predicted_reduction_objective + predicted_reduction_infeasibility, nlp_opts->print_level, 2);
     print_debug_output_double("right hand side: ", opts->penalty_eta * predicted_reduction_infeasibility, nlp_opts->print_level, 2);
-    //TODO(david): What do we do here to make it correct? We would like to avoid numerical noise
+    // TODO(david): What do we do here to make it correct? We would like to avoid numerical noise
     if (predicted_reduction_objective < 0 && predicted_reduction_objective > -1e-4)
     {
         predicted_reduction_objective = 0.0;
@@ -494,7 +494,7 @@ int backtracking_line_search(ocp_nlp_config *config,
         trial_cost = 0.0;
         for(i=0; i<=N; i++)
         {
-            tmp_fun = config->cost[i]->memory_get_fun_ptr(nlp_mem->cost[i]);
+            tmp_fun = config->cost[i]->memory_get(nlp_mem->cost[i], "fun");
             trial_cost += *tmp_fun;
         }
         trial_infeasibility = ocp_nlp_get_l1_infeasibility(config, dims, nlp_mem);

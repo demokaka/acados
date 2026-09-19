@@ -31,11 +31,13 @@
 
 clearvars; clc; close all;
 
+warning('off','all');
 
 % list the examples you would like to test
 targets = {
     '../p_global_example/test_p_global_without_dependencies.m';
-    '../p_global_example/main.m';
+    '../p_global_example/main_ocp.m';
+    '../p_global_example/main_mocp.m';
     '../p_global_example/simulink_test_p_global.m';
     '../mocp_transition_example/main_parametric_mocp.m';
     '../pendulum_on_cart_model/nonlinear_constraint_test.m';
@@ -63,7 +65,8 @@ for idx = 1:length(targets)
         test_val = true;
     catch exception
         setenv("TEST_MESSAGE", exception.message)
-        warning(exception.message);
+        disp(['test ', targets{idx}, ' failed!'])
+        disp(exception.message);
         clear exception
         test_val = false;
     end
@@ -75,8 +78,10 @@ for idx = 1:length(targets)
     messages{idx} = getenv("TEST_MESSAGE");
     if contains(targets{idx},'simulink'); bdclose('all'); end
     delete(strcat(testpath, "/test_workspace.mat"));
+
+    % TODO still needed?
     % delete generated code to avoid failure in examples using similar names
-    code_gen_dir = strcat(testpath, "/", dir, "/c_generated_code");
+    % code_gen_dir = strcat(testpath, "/", dir, "/c_generated_code");
     % if exist(code_gen_dir, 'dir')
     %     rmdir(code_gen_dir, 's')
     % end
