@@ -145,3 +145,7 @@ examples/**/*.png
 # gprofng #
 ###########
 *.er
+
+
+build-shared
+install-shared
